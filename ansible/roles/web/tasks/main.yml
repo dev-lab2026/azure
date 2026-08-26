@@ -1,0 +1,42 @@
+---
+- name: Create application directory
+  ansible.builtin.file:
+    path: "{{ app_dir }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0755"
+
+- name: Checkout application repository
+  ansible.builtin.git:
+    repo: "{{ repo_url }}"
+    dest: "{{ app_dir }}"
+    version: "{{ repo_branch }}"
+    force: true
+    update: true
+
+- name: Check Docker Compose file
+  ansible.builtin.stat:
+    path: "{{ app_dir }}/{{ compose_file }}"
+  register: compose_file_stat
+
+- name: Fail if Docker Compose file is missing
+  ansible.builtin.fail:
+    msg: "Docker Compose file not found: {{ app_dir }}/{{ compose_file }}"
+  when: not compose_file_stat.stat.exists
+
+- name: Build and start application
+  ansible.builtin.command:
+    cmd: docker compose -f {{ compose_file }} up -d --build
+    chdir: "{{ app_dir }}"
+
+- name: Show containers
+  ansible.builtin.command:
+    cmd: docker compose -f {{ compose_file }} ps
+    chdir: "{{ app_dir }}"
+  register: compose_ps
+  changed_when: false
+
+- name: Display containers
+  ansible.builtin.debug:
+    var: compose_ps.stdout_lines

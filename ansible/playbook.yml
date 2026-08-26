@@ -1,9 +1,0 @@
----
-# Entry point for configuring the Ubuntu web server.
-- name: Configure React web server
-  hosts: web
-  become: true
-  gather_facts: true
-
-  roles:
-    - react
