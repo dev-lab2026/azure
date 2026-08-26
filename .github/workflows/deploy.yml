@@ -1,4 +1,4 @@
-name: Deploy React application to Azure VM
+name: Deploy InterFlow
 
 on:
   push:
@@ -7,134 +7,423 @@ on:
   workflow_dispatch:
 
 permissions:
+  id-token: write
   contents: read
 
-concurrency:
-  group: production-deployment
-  cancel-in-progress: false
-
 env:
-  TF_IN_AUTOMATION: "true"
-  TF_INPUT: "false"
-  TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
-  TF_VAR_project_name: "reactcicd"
-  TF_VAR_environment: "prod"
-  TF_VAR_location: "West Europe"
-  REPO_URL: https://github.com/${{ github.repository }}.git
+  TF_VERSION: "1.15.0"
+  TF_DIR: "terraform"
+  ANSIBLE_DIR: "ansible"
+  VM_USER: "azureadmin"
 
 jobs:
   deploy:
+    name: Deploy Infrastructure and Application
     runs-on: ubuntu-latest
-    environment: production
 
     steps:
+
+      # ==========================================================
+      # CHECKOUT
+      # ==========================================================
+
       - name: Checkout
         uses: actions/checkout@v4
+
+
+      # ==========================================================
+      # AZURE OIDC
+      # ==========================================================
 
       - name: Azure Login
         uses: azure/login@v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+
+      # ==========================================================
+      # AZURE CHECK
+      # ==========================================================
+
+      - name: Verify Azure
+        run: |
+          set -e
+
+          az account show --output table
+
+
+      # ==========================================================
+      # TERRAFORM
+      # ==========================================================
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "1.15.9"
-          terraform_wrapper: false
+          terraform_version: ${{ env.TF_VERSION }}
+
+
+      - name: Terraform Version
+        run: |
+          terraform version
+
+
+      # ==========================================================
+      # TERRAFORM INIT
+      # ==========================================================
 
       - name: Terraform Init
-        working-directory: terraform
-        run: terraform init
-
-      - name: Terraform Format Check
-        working-directory: terraform
-        run: terraform fmt -check -recursive
-
-      - name: Terraform Validate
-        working-directory: terraform
-        run: terraform validate
-
-      - name: Terraform Plan
-        working-directory: terraform
-        run: terraform plan -out=tfplan
-
-      - name: Terraform Apply
-        working-directory: terraform
-        run: terraform apply -auto-approve tfplan
-
-      - name: Export VM public IP
-        id: terraform-output
-        working-directory: terraform
-        run: |
-          IP="$(terraform output -raw vm_public_ip)"
-          echo "vm_public_ip=${IP}" >> "$GITHUB_OUTPUT"
-          echo "VM public IP: ${IP}"
-
-      - name: Install Ansible and rsync
-        run: |
-          python3 -m pip install --upgrade pip
-          python3 -m pip install ansible
-          sudo apt-get update
-          sudo apt-get install -y rsync
-
-      - name: Configure SSH key
-        run: |
-          set -euo pipefail
-          install -d -m 700 "$HOME/.ssh"
-          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > "$HOME/.ssh/id_rsa"
-          chmod 600 "$HOME/.ssh/id_rsa"
-          ssh-keygen -y -f "$HOME/.ssh/id_rsa" > /dev/null
-
-      - name: Generate Ansible inventory
-        env:
-          VM_PUBLIC_IP: ${{ steps.terraform-output.outputs.vm_public_ip }}
-        run: |
-          set -euo pipefail
-          sed \
-            -e "s|\${vm_public_ip}|${VM_PUBLIC_IP}|g" \
-            -e "s|\${admin_username}|azureadmin|g" \
-            -e "s|\${ssh_key_path}|$HOME/.ssh/id_rsa|g" \
-            ansible/inventory.tpl > ansible/inventory.ini
-          cat ansible/inventory.ini
-
-      - name: Wait for SSH
-        env:
-          VM_PUBLIC_IP: ${{ steps.terraform-output.outputs.vm_public_ip }}
-        run: |
-          for i in {1..30}; do
-            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i "$HOME/.ssh/id_rsa" azureadmin@"$VM_PUBLIC_IP" "echo ssh-ready" 2>/dev/null; then
-              exit 0
-            fi
-            sleep 10
-          done
-          echo "SSH did not become available in time."
-          exit 1
-
-      - name: Run Ansible
-        env:
-          REPO_URL: ${{ env.REPO_URL }}
-        run: |
-          ansible-playbook \
-            -i ansible/inventory.ini \
-            ansible/playbook.yml \
-            -e "repo_url=${REPO_URL}" \
-            -e "repo_version=${GITHUB_SHA}"
-
-      - name: Verify HTTP deployment
-        env:
-          VM_PUBLIC_IP: ${{ steps.terraform-output.outputs.vm_public_ip }}
+        working-directory: ${{ env.TF_DIR }}
         run: |
           set -e
-          for i in {1..12}; do
-            if curl --fail --silent --show-error --max-time 10 "http://${VM_PUBLIC_IP}/health"; then
-              echo
-              echo "Deployment successful: http://${VM_PUBLIC_IP}"
-              exit 0
+
+          terraform init \
+            -input=false
+
+
+      # ==========================================================
+      # TERRAFORM FORMAT
+      # ==========================================================
+
+      - name: Terraform Format
+        run: terraform -chdir=terraform fmt -check -recursive        
+      # ==========================================================
+      # TERRAFORM VALIDATE
+      # ==========================================================
+
+      - name: Terraform Validate
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          set -e
+
+          terraform validate
+
+
+      # ==========================================================
+      # TERRAFORM PLAN
+      # ==========================================================
+
+      - name: Terraform Plan
+        working-directory: ${{ env.TF_DIR }}
+        env:
+          TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+        run: |
+          set -e
+
+          terraform plan \
+            -input=false \
+            -out=tfplan
+
+
+      # ==========================================================
+      # TERRAFORM APPLY
+      # ==========================================================
+
+      - name: Terraform Apply
+        working-directory: ${{ env.TF_DIR }}
+        env:
+          TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+        run: |
+          set -e
+
+          terraform apply \
+            -input=false \
+            -auto-approve \
+            tfplan
+
+
+      # ==========================================================
+      # GET VM IP
+      # ==========================================================
+
+      - name: Get VM Public IP
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          set -e
+
+          VM_IP="$(terraform output -raw vm_public_ip)"
+
+          if [ -z "$VM_IP" ]; then
+            echo "ERROR: VM public IP is empty."
+            exit 1
+          fi
+
+          echo "VM_PUBLIC_IP=$VM_IP" >> "$GITHUB_ENV"
+
+          echo "=========================================="
+          echo "VM PUBLIC IP: $VM_IP"
+          echo "=========================================="
+
+
+      # ==========================================================
+      # SSH SETUP
+      # ==========================================================
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          set -e
+
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+
+          chmod 600 ~/.ssh/id_rsa
+
+          ssh-keygen \
+            -y \
+            -f ~/.ssh/id_rsa \
+            > /dev/null
+
+          echo "SSH private key is valid."
+
+
+            # ==========================================================
+      # WAIT FOR SSH
+      # ==========================================================
+
+      - name: Wait for SSH
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "Waiting for SSH"
+          echo "=========================================="
+          echo "VM: $VM_PUBLIC_IP"
+          echo "Port: 22"
+
+          for attempt in {1..30}; do
+
+            echo "Attempt $attempt/30..."
+
+            if nc -z -w 5 "$VM_PUBLIC_IP" 22 2>/dev/null; then
+              echo "SSH port 22 is available."
+              break
             fi
-            sleep 5
+
+            if [ "$attempt" -eq 30 ]; then
+              echo ""
+              echo "ERROR: SSH port 22 is unreachable."
+              echo ""
+              echo "VM_PUBLIC_IP=$VM_PUBLIC_IP"
+              echo ""
+              echo "Network test:"
+              nc -vz -w 5 "$VM_PUBLIC_IP" 22 || true
+              exit 1
+            fi
+
+            sleep 10
+
           done
-          echo "Application health check failed."
+
+
+      # ==========================================================
+      # KNOWN HOSTS
+      # ==========================================================
+
+      - name: Configure known hosts
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "Configure SSH known_hosts"
+          echo "=========================================="
+
+          rm -f ~/.ssh/known_hosts
+
+          ssh-keyscan \
+            -4 \
+            -T 10 \
+            -p 22 \
+            "$VM_PUBLIC_IP" \
+            > ~/.ssh/known_hosts 2>/tmp/ssh-keyscan-error.log
+
+          if [ ! -s ~/.ssh/known_hosts ]; then
+            echo "ERROR: Unable to retrieve SSH host key."
+            echo ""
+            echo "ssh-keyscan output:"
+            cat /tmp/ssh-keyscan-error.log
+            exit 1
+          fi
+
+          chmod 644 ~/.ssh/known_hosts
+
+          echo "SSH host key successfully added."
+
+      # ==========================================================
+      # SSH TEST
+      # ==========================================================
+
+      - name: Test SSH
+        run: |
+          set -e
+
+          ssh \
+            -4 \
+            -i ~/.ssh/id_rsa \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o StrictHostKeyChecking=yes \
+            "$VM_USER@$VM_PUBLIC_IP" \
+            "echo SSH_OK"
+
+
+      # ==========================================================
+      # ANSIBLE
+      # ==========================================================
+
+      - name: Install Ansible
+        run: |
+          set -e
+
+          python3 -m pip install --upgrade pip
+          python3 -m pip install ansible
+
+          ansible --version
+
+
+      # ==========================================================
+      # INVENTORY
+      # ==========================================================
+
+      - name: Generate Ansible inventory
+        run: |
+          set -e
+
+          mkdir -p "$ANSIBLE_DIR"
+
+          cat > "$ANSIBLE_DIR/inventory.ini" <<EOF
+          [web]
+          $VM_PUBLIC_IP
+
+          [all:vars]
+          ansible_user=$VM_USER
+          ansible_ssh_private_key_file=/home/runner/.ssh/id_rsa
+          ansible_python_interpreter=/usr/bin/python3
+          ansible_host_key_checking=false
+          EOF
+
+          echo "Ansible inventory:"
+          cat "$ANSIBLE_DIR/inventory.ini"
+
+
+      # ==========================================================
+      # ANSIBLE PING
+      # ==========================================================
+
+      - name: Ansible Ping
+        run: |
+          set -e
+
+          ansible \
+            -i "$ANSIBLE_DIR/inventory.ini" \
+            web \
+            -m ping
+
+
+      # ==========================================================
+      # DEPLOY APPLICATION
+      # ==========================================================
+
+      - name: Deploy InterFlow
+        run: |
+          set -e
+
+          ansible-playbook \
+            -i "$ANSIBLE_DIR/inventory.ini" \
+            "$ANSIBLE_DIR/site.yml"
+
+
+      # ==========================================================
+      # VERIFY DOCKER
+      # ==========================================================
+
+      - name: Verify Docker
+        run: |
+          set -e
+
+          ssh \
+            -4 \
+            -i ~/.ssh/id_rsa \
+            "$VM_USER@$VM_PUBLIC_IP" \
+            "docker ps"
+
+
+      # ==========================================================
+      # APPLICATION HEALTH
+      # ==========================================================
+
+      - name: Health Check
+        run: |
+          set -e
+
+          echo "Waiting for InterFlow..."
+
+          for attempt in {1..12}; do
+
+            if curl \
+              --fail \
+              --silent \
+              --show-error \
+              "http://$VM_PUBLIC_IP/api/health"
+            then
+
+              echo ""
+              echo "InterFlow is healthy."
+              exit 0
+
+            fi
+
+            echo "Application not ready - attempt $attempt/12"
+
+            sleep 10
+
+          done
+
+          echo "ERROR: InterFlow health check failed."
           exit 1
+
+
+      # ==========================================================
+      # SUCCESS
+      # ==========================================================
+
+      - name: Deployment Summary
+        if: success()
+        run: |
+          echo ""
+          echo "=========================================="
+          echo "       DEPLOYMENT SUCCESSFUL"
+          echo "=========================================="
+          echo ""
+          echo "Application:"
+          echo "http://$VM_PUBLIC_IP"
+          echo ""
+          echo "Terraform: OK"
+          echo "Azure OIDC: OK"
+          echo "SSH: OK"
+          echo "Ansible: OK"
+          echo "Docker: OK"
+          echo "Health Check: OK"
+          echo ""
+          echo "=========================================="
+      - name: DEBUG - Show workflow
+        run: |
+          echo "WORKFLOW = $GITHUB_WORKFLOW"
+          echo "WORKFLOW_REF = $GITHUB_WORKFLOW_REF"
+          echo "SHA = $GITHUB_SHA"
+          echo "BRANCH = $GITHUB_REF_NAME"
+
+          echo "======================================"
+          echo "Searching terraform.tfvars"
+          echo "======================================"
+
+          grep -Rni \
+            --exclude-dir=.git \
+            "terraform.tfvars" \
+            .github \
+            terraform \
+            || true
