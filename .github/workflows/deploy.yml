@@ -12,9 +12,9 @@ permissions:
 
 env:
   TF_VERSION: "1.15.0"
-  TF_DIR: "terraform"
-  ANSIBLE_DIR: "ansible"
-  VM_USER: "azureadmin"
+  TF_DIR: terraform
+  ANSIBLE_DIR: ansible
+  VM_USER: azureadmin
 
 jobs:
   deploy:
@@ -27,12 +27,12 @@ jobs:
       # CHECKOUT
       # ==========================================================
 
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
 
       # ==========================================================
-      # AZURE OIDC
+      # AZURE LOGIN
       # ==========================================================
 
       - name: Azure Login
@@ -44,17 +44,6 @@ jobs:
 
 
       # ==========================================================
-      # AZURE CHECK
-      # ==========================================================
-
-      - name: Verify Azure
-        run: |
-          set -e
-
-          az account show --output table
-
-
-      # ==========================================================
       # TERRAFORM
       # ==========================================================
 
@@ -63,70 +52,31 @@ jobs:
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-
-      - name: Terraform Version
-        run: |
-          terraform version
-
-
-      # ==========================================================
-      # TERRAFORM INIT
-      # ==========================================================
-
       - name: Terraform Init
         working-directory: ${{ env.TF_DIR }}
-        run: |
-          set -e
-
-          terraform init \
-            -input=false
-
-
-      # ==========================================================
-      # TERRAFORM FORMAT
-      # ==========================================================
+        run: terraform init -input=false
 
       - name: Terraform Format
-        run: terraform -chdir=terraform fmt -check -recursive        
-      # ==========================================================
-      # TERRAFORM VALIDATE
-      # ==========================================================
+        run: terraform -chdir=${{ env.TF_DIR }} fmt -check -recursive
 
       - name: Terraform Validate
         working-directory: ${{ env.TF_DIR }}
-        run: |
-          set -e
-
-          terraform validate
-
-
-      # ==========================================================
-      # TERRAFORM PLAN
-      # ==========================================================
+        run: terraform validate
 
       - name: Terraform Plan
         working-directory: ${{ env.TF_DIR }}
         env:
           TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
         run: |
-          set -e
-
           terraform plan \
             -input=false \
             -out=tfplan
-
-
-      # ==========================================================
-      # TERRAFORM APPLY
-      # ==========================================================
 
       - name: Terraform Apply
         working-directory: ${{ env.TF_DIR }}
         env:
           TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
         run: |
-          set -e
-
           terraform apply \
             -input=false \
             -auto-approve \
@@ -144,20 +94,15 @@ jobs:
 
           VM_IP="$(terraform output -raw vm_public_ip)"
 
-          if [ -z "$VM_IP" ]; then
-            echo "ERROR: VM public IP is empty."
-            exit 1
-          fi
+          test -n "$VM_IP"
 
           echo "VM_PUBLIC_IP=$VM_IP" >> "$GITHUB_ENV"
 
-          echo "=========================================="
-          echo "VM PUBLIC IP: $VM_IP"
-          echo "=========================================="
+          echo "VM IP: $VM_IP"
 
 
       # ==========================================================
-      # SSH SETUP
+      # SSH
       # ==========================================================
 
       - name: Configure SSH
@@ -173,85 +118,49 @@ jobs:
 
           chmod 600 ~/.ssh/id_rsa
 
-          ssh-keygen \
-            -y \
-            -f ~/.ssh/id_rsa \
-            > /dev/null
+          ssh-keygen -y -f ~/.ssh/id_rsa > /tmp/ssh_public_key
 
-          echo "SSH private key is valid."
+          echo "SSH key validated."
 
 
-            # ==========================================================
-      # WAIT FOR SSH
+      # ==========================================================
+      # WAIT SSH
       # ==========================================================
 
       - name: Wait for SSH
         run: |
           set -e
 
-          echo "=========================================="
-          echo "Waiting for SSH"
-          echo "=========================================="
-          echo "VM: $VM_PUBLIC_IP"
-          echo "Port: 22"
-
-          for attempt in {1..30}; do
-
-            echo "Attempt $attempt/30..."
-
-            if nc -z -w 5 "$VM_PUBLIC_IP" 22 2>/dev/null; then
-              echo "SSH port 22 is available."
-              break
+          for i in {1..30}; do
+            if nc -z -w 5 "$VM_PUBLIC_IP" 22; then
+              echo "SSH available."
+              exit 0
             fi
 
-            if [ "$attempt" -eq 30 ]; then
-              echo ""
-              echo "ERROR: SSH port 22 is unreachable."
-              echo ""
-              echo "VM_PUBLIC_IP=$VM_PUBLIC_IP"
-              echo ""
-              echo "Network test:"
-              nc -vz -w 5 "$VM_PUBLIC_IP" 22 || true
-              exit 1
-            fi
-
+            echo "Waiting for SSH... $i/30"
             sleep 10
-
           done
+
+          echo "SSH unavailable."
+          exit 1
 
 
       # ==========================================================
-      # KNOWN HOSTS
+      # KNOWN HOST
       # ==========================================================
 
       - name: Configure known hosts
         run: |
           set -e
 
-          echo "=========================================="
-          echo "Configure SSH known_hosts"
-          echo "=========================================="
-
-          rm -f ~/.ssh/known_hosts
-
           ssh-keyscan \
             -4 \
             -T 10 \
-            -p 22 \
             "$VM_PUBLIC_IP" \
-            > ~/.ssh/known_hosts 2>/tmp/ssh-keyscan-error.log
-
-          if [ ! -s ~/.ssh/known_hosts ]; then
-            echo "ERROR: Unable to retrieve SSH host key."
-            echo ""
-            echo "ssh-keyscan output:"
-            cat /tmp/ssh-keyscan-error.log
-            exit 1
-          fi
+            >> ~/.ssh/known_hosts
 
           chmod 644 ~/.ssh/known_hosts
 
-          echo "SSH host key successfully added."
 
       # ==========================================================
       # SSH TEST
@@ -265,20 +174,18 @@ jobs:
             -4 \
             -i ~/.ssh/id_rsa \
             -o BatchMode=yes \
-            -o ConnectTimeout=15 \
             -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=15 \
             "$VM_USER@$VM_PUBLIC_IP" \
             "echo SSH_OK"
 
 
       # ==========================================================
-      # ANSIBLE
+      # INSTALL ANSIBLE
       # ==========================================================
 
       - name: Install Ansible
         run: |
-          set -e
-
           python3 -m pip install --upgrade pip
           python3 -m pip install ansible
 
@@ -291,10 +198,6 @@ jobs:
 
       - name: Generate Ansible inventory
         run: |
-          set -e
-
-          mkdir -p "$ANSIBLE_DIR"
-
           cat > "$ANSIBLE_DIR/inventory.ini" <<EOF
           [web]
           $VM_PUBLIC_IP
@@ -306,7 +209,6 @@ jobs:
           ansible_host_key_checking=false
           EOF
 
-          echo "Ansible inventory:"
           cat "$ANSIBLE_DIR/inventory.ini"
 
 
@@ -316,8 +218,6 @@ jobs:
 
       - name: Ansible Ping
         run: |
-          set -e
-
           ansible \
             -i "$ANSIBLE_DIR/inventory.ini" \
             web \
@@ -328,13 +228,31 @@ jobs:
       # DEPLOY APPLICATION
       # ==========================================================
 
-      - name: Deploy InterFlow
+      - name: Deploy APPLICATION
+        env:
+          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
+          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+          MICROSOFT_CLIENT_ID: ${{ secrets.MICROSOFT_CLIENT_ID }}
+          MICROSOFT_CLIENT_SECRET: ${{ secrets.MICROSOFT_CLIENT_SECRET }}
+          MICROSOFT_TENANT_ID: ${{ secrets.MICROSOFT_TENANT_ID }}
+          MICROSOFT_REDIRECT_URI: ${{ secrets.MICROSOFT_REDIRECT_URI }}
         run: |
           set -e
 
           ansible-playbook \
             -i "$ANSIBLE_DIR/inventory.ini" \
-            "$ANSIBLE_DIR/site.yml"
+            "$ANSIBLE_DIR/site.yml" \
+            -e "postgres_db=$POSTGRES_DB" \
+            -e "postgres_user=$POSTGRES_USER" \
+            -e "postgres_password=$POSTGRES_PASSWORD" \
+            -e "session_secret=$SESSION_SECRET" \
+            -e "microsoft_client_id=$MICROSOFT_CLIENT_ID" \
+            -e "microsoft_client_secret=$MICROSOFT_CLIENT_SECRET" \
+            -e "microsoft_tenant_id=$MICROSOFT_TENANT_ID" \
+            -e "microsoft_redirect_uri=$MICROSOFT_REDIRECT_URI" \
+            -e "app_url=http://$VM_PUBLIC_IP"
 
 
       # ==========================================================
@@ -360,30 +278,32 @@ jobs:
         run: |
           set -e
 
-          echo "Waiting for InterFlow..."
-
-          for attempt in {1..12}; do
+          for attempt in {1..18}; do
 
             if curl \
               --fail \
               --silent \
               --show-error \
-              "http://$VM_PUBLIC_IP/api/health"
-            then
+              "http://$VM_PUBLIC_IP/api/health"; then
 
               echo ""
               echo "InterFlow is healthy."
               exit 0
-
             fi
 
-            echo "Application not ready - attempt $attempt/12"
+            echo "Application not ready - $attempt/18"
 
             sleep 10
-
           done
 
-          echo "ERROR: InterFlow health check failed."
+          echo "Health check failed."
+
+          ssh \
+            -4 \
+            -i ~/.ssh/id_rsa \
+            "$VM_USER@$VM_PUBLIC_IP" \
+            "cd /opt/clarity/app && docker compose --env-file .env ps && docker compose --env-file .env logs --tail=100"
+
           exit 1
 
 
@@ -403,27 +323,9 @@ jobs:
           echo "http://$VM_PUBLIC_IP"
           echo ""
           echo "Terraform: OK"
-          echo "Azure OIDC: OK"
+          echo "Azure: OK"
           echo "SSH: OK"
           echo "Ansible: OK"
           echo "Docker: OK"
           echo "Health Check: OK"
           echo ""
-          echo "=========================================="
-      - name: DEBUG - Show workflow
-        run: |
-          echo "WORKFLOW = $GITHUB_WORKFLOW"
-          echo "WORKFLOW_REF = $GITHUB_WORKFLOW_REF"
-          echo "SHA = $GITHUB_SHA"
-          echo "BRANCH = $GITHUB_REF_NAME"
-
-          echo "======================================"
-          echo "Searching terraform.tfvars"
-          echo "======================================"
-
-          grep -Rni \
-            --exclude-dir=.git \
-            "terraform.tfvars" \
-            .github \
-            terraform \
-            || true
