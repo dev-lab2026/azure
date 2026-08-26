@@ -418,3 +418,20 @@ jobs:
           echo "Health Check: OK"
           echo ""
           echo "=========================================="
+      - name: DEBUG - Show workflow
+        run: |
+          echo "WORKFLOW = $GITHUB_WORKFLOW"
+          echo "WORKFLOW_REF = $GITHUB_WORKFLOW_REF"
+          echo "SHA = $GITHUB_SHA"
+          echo "BRANCH = $GITHUB_REF_NAME"
+
+          echo "======================================"
+          echo "Searching terraform.tfvars"
+          echo "======================================"
+
+          grep -Rni \
+            --exclude-dir=.git \
+            "terraform.tfvars" \
+            .github \
+            terraform \
+            || true
