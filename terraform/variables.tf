@@ -13,31 +13,19 @@ variable "environment" {
 variable "location" {
   description = "Azure region."
   type        = string
-  default     = "West Europe"
+  default     = "swedencentral"
 }
 
 variable "resource_group_name" {
-  description = "Azure Resource Group name."
+  description = "Azure Resource Group name. Leave empty to generate automatically."
   type        = string
   default     = ""
-}
-
-variable "vnet_address_space" {
-  description = "VNet CIDR."
-  type        = list(string)
-  default     = ["10.20.0.0/16"]
-}
-
-variable "subnet_address_prefixes" {
-  description = "Application subnet CIDR."
-  type        = list(string)
-  default     = ["10.20.1.0/24"]
 }
 
 variable "vm_size" {
   description = "Azure VM SKU."
   type        = string
-  default     = "Standard_B2s"
+  default     = "Standard_D2s_v5"
 }
 
 variable "admin_username" {
@@ -53,14 +41,15 @@ variable "ssh_public_key" {
 }
 
 variable "allowed_ssh_cidr" {
-  description = "CIDR allowed to reach SSH. Prefer a corporate/VPN IP instead of 0.0.0.0/0."
+  description = "CIDR allowed to reach SSH."
   type        = string
-  default     = "0.0.0.0/0"
+  default     = "203.0.113.10/32"
 }
 
 variable "tags" {
   description = "Common Azure resource tags."
   type        = map(string)
+
   default = {
     managed_by = "terraform"
     workload   = "react-cicd"
