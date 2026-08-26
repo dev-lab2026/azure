@@ -15,6 +15,17 @@
     force: true
     update: true
 
+- name: Show Git remote
+  ansible.builtin.command:
+    cmd: git remote -v
+    chdir: "{{ app_dir }}"
+  register: git_remote
+  changed_when: false
+
+- name: Display Git remote
+  ansible.builtin.debug:
+    var: git_remote.stdout_lines
+
 - name: Show Git commit
   ansible.builtin.command:
     cmd: git rev-parse HEAD
@@ -25,6 +36,15 @@
 - name: Display Git commit
   ansible.builtin.debug:
     msg: "Application repository commit: {{ git_commit.stdout }}"
+
+- name: Verify application directory
+  ansible.builtin.stat:
+    path: "{{ app_dir }}/app/docker-compose.yml"
+  register: compose_file
+
+- name: Display Compose path
+  ansible.builtin.debug:
+    msg: "Docker Compose: {{ app_dir }}/app/docker-compose.yml"
 
 - name: Validate Docker Compose syntax
   ansible.builtin.command:
