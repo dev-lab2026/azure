@@ -189,7 +189,7 @@ jobs:
           echo "SSH private key is valid."
 
 
-      # ==========================================================
+            # ==========================================================
       # WAIT FOR SSH
       # ==========================================================
 
@@ -197,26 +197,35 @@ jobs:
         run: |
           set -e
 
-          echo "Waiting for $VM_PUBLIC_IP:22"
+          echo "=========================================="
+          echo "Waiting for SSH"
+          echo "=========================================="
+          echo "VM: $VM_PUBLIC_IP"
+          echo "Port: 22"
 
           for attempt in {1..30}; do
 
-            if timeout 5 bash -c \
-              "</dev/tcp/$VM_PUBLIC_IP/22" \
-              2>/dev/null
-            then
+            echo "Attempt $attempt/30..."
+
+            if nc -z -w 5 "$VM_PUBLIC_IP" 22 2>/dev/null; then
               echo "SSH port 22 is available."
-              exit 0
+              break
             fi
 
-            echo "SSH not ready - attempt $attempt/30"
+            if [ "$attempt" -eq 30 ]; then
+              echo ""
+              echo "ERROR: SSH port 22 is unreachable."
+              echo ""
+              echo "VM_PUBLIC_IP=$VM_PUBLIC_IP"
+              echo ""
+              echo "Network test:"
+              nc -vz -w 5 "$VM_PUBLIC_IP" 22 || true
+              exit 1
+            fi
 
             sleep 10
 
           done
-
-          echo "ERROR: SSH port 22 is unreachable."
-          exit 1
 
 
       # ==========================================================
@@ -227,16 +236,30 @@ jobs:
         run: |
           set -e
 
+          echo "=========================================="
+          echo "Configure SSH known_hosts"
+          echo "=========================================="
+
+          rm -f ~/.ssh/known_hosts
+
           ssh-keyscan \
             -4 \
             -T 10 \
+            -p 22 \
             "$VM_PUBLIC_IP" \
-            > ~/.ssh/known_hosts
+            > ~/.ssh/known_hosts 2>/tmp/ssh-keyscan-error.log
+
+          if [ ! -s ~/.ssh/known_hosts ]; then
+            echo "ERROR: Unable to retrieve SSH host key."
+            echo ""
+            echo "ssh-keyscan output:"
+            cat /tmp/ssh-keyscan-error.log
+            exit 1
+          fi
 
           chmod 644 ~/.ssh/known_hosts
 
-          echo "known_hosts configured."
-
+          echo "SSH host key successfully added."
 
       # ==========================================================
       # SSH TEST
