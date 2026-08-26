@@ -228,31 +228,17 @@ jobs:
       # DEPLOY APPLICATION
       # ==========================================================
 
-      - name: Deploy APPLICATION
+      - name: Deploy InterFlow
         env:
-          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
-          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
-          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
-          SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
-          MICROSOFT_CLIENT_ID: ${{ secrets.MICROSOFT_CLIENT_ID }}
-          MICROSOFT_CLIENT_SECRET: ${{ secrets.MICROSOFT_CLIENT_SECRET }}
-          MICROSOFT_TENANT_ID: ${{ secrets.MICROSOFT_TENANT_ID }}
-          MICROSOFT_REDIRECT_URI: ${{ secrets.MICROSOFT_REDIRECT_URI }}
+           ENV_FILE: ${{ secrets.ENV_FILE }}
         run: |
           set -e
 
+          test -n "$ENV_FILE"
+
           ansible-playbook \
-            -i "$ANSIBLE_DIR/inventory.ini" \
-            "$ANSIBLE_DIR/site.yml" \
-            -e "postgres_db=$POSTGRES_DB" \
-            -e "postgres_user=$POSTGRES_USER" \
-            -e "postgres_password=$POSTGRES_PASSWORD" \
-            -e "session_secret=$SESSION_SECRET" \
-            -e "microsoft_client_id=$MICROSOFT_CLIENT_ID" \
-            -e "microsoft_client_secret=$MICROSOFT_CLIENT_SECRET" \
-            -e "microsoft_tenant_id=$MICROSOFT_TENANT_ID" \
-            -e "microsoft_redirect_uri=$MICROSOFT_REDIRECT_URI" \
-            -e "app_url=http://$VM_PUBLIC_IP"
+           -i "$ANSIBLE_DIR/inventory.ini" \
+            "$ANSIBLE_DIR/site.yml"
 
 
       # ==========================================================
