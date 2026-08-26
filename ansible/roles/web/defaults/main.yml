@@ -1,6 +1,6 @@
 ---
 app_name: clarity
 app_dir: /opt/clarity
-repo_url: "https://github.com/dev-lab2026/interFlow.git"
+repo_url: "https://github.com/dev-lab2026/azure.git"
 repo_branch: main
 compose_file: docker-compose.yml
