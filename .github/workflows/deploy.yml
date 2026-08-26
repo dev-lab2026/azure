@@ -86,16 +86,11 @@ jobs:
       # TERRAFORM FORMAT
       # ==========================================================
 
-      - name: Terraform Format
-        working-directory: ${{ env.TF_DIR }}
-        run: |
-          set -e
-
-          terraform fmt \
-            -check \
-            -recursive
-
-
+       - name: Terraform Format
+         working-directory: ${{ env.TF_DIR }}
+         run: |
+           set -e
+           terraform fmt -check -recursive         
       # ==========================================================
       # TERRAFORM VALIDATE
       # ==========================================================
