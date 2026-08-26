@@ -925,13 +925,13 @@ app.post('/api/auth/microsoft/demo-login',(req,res)=>{
 app.get('/api/auth/config-info',(req,res)=>{const appUrl=process.env.APP_URL||`${req.protocol}://${req.get('host')}`;const redirectUri=getMicrosoftRedirectUri(req);res.json({devCallbackUrl:redirectUri,sharedCallbackUrl:redirectUri,isConfigured:Boolean(process.env.MICROSOFT_CLIENT_ID&&process.env.MICROSOFT_CLIENT_SECRET),clientId:process.env.MICROSOFT_CLIENT_ID?'Configuré':'Non configuré',tenantId:process.env.MICROSOFT_TENANT_ID?'Configuré':'Non configuré',demoMode:process.env.DEMO_MODE==='true',localAuthEnabled:localAdminEnabled(),localAdminEmail:localAdminEmail()});});
 
 // API: Admin Settings & Integration Tests
-app.post('/api/admin/ad/test-connection', (req: Request, res: Response) => {
+app.post('/api/admin/ad/test-connection', requireAuth, requireRole(RBAC.canAccessAdmin), (req: Request, res: Response) => {
   const configured=Boolean(process.env.MICROSOFT_CLIENT_ID&&process.env.MICROSOFT_CLIENT_SECRET);
   if(!configured) return res.status(503).json({success:false,error:'Microsoft Entra ID n’est pas configuré.'});
   res.json({success:true,message:'Configuration Microsoft Entra ID détectée.',tenantId:process.env.MICROSOFT_TENANT_ID||'common',timestamp:new Date().toISOString()});
 });
 
-app.post('/api/admin/postgres/test-connection', async (req: Request, res: Response) => {
+app.post('/api/admin/postgres/test-connection', requireAuth, requireRole(RBAC.canAccessAdmin), async (req: Request, res: Response) => {
   const pool = getPgPool();
   if (!pool) return res.status(503).json({success:false,error:'PostgreSQL n’est pas configuré.'});
   const started=Date.now();
@@ -983,6 +983,25 @@ app.delete('/api/admin/ai/gateway/providers/:id', requireAuth, requireRole(RBAC.
 app.post('/api/admin/ai/gateway/test', requireAuth, requireRole(RBAC.canAccessAdmin), async (req, res) => {
   try { const accountId=req.body?.accountId ? Number(req.body.accountId) : undefined; const provider=req.body?.provider || undefined; const result=await callGatewayText({prompt:'Réponds uniquement par le mot OPERATIONNEL.',isJson:false,provider,accountId}); if(!result) return res.status(503).json({success:false,error:'Aucun provider configuré.'}); res.json({success:true,provider:result.account.provider,account:result.account.name,model:result.account.model,reply:result.text.trim()}); }
   catch(e:any){ res.status(503).json({success:false,error:e?.message||'Test IA impossible.'}); }
+});
+
+app.patch('/api/admin/ai/gateway/providers/:id', requireAuth, requireRole(RBAC.canAccessAdmin), async (req, res) => {
+  try {
+    const id=Number(req.params.id); if(!Number.isInteger(id)||id<=0) return res.status(400).json({success:false,error:'Identifiant provider invalide.'});
+    const pool=getPgPool(); if(!pool) return res.status(503).json({success:false,error:'PostgreSQL requis.'});
+    await ensureAIRouterTable(); const enabled=Boolean(req.body?.enabled);
+    const r=await pool.query(`UPDATE ai_provider_accounts SET enabled=$1,disabled_until=NULL,last_error=CASE WHEN $1 THEN NULL ELSE COALESCE(last_error,'Désactivé par un administrateur') END,updated_at=NOW() WHERE id=$2 RETURNING id,name,provider,model,enabled,priority`,[enabled,id]);
+    if(!r.rowCount) return res.status(404).json({success:false,error:'Provider introuvable.'});
+    await profileAudit(req,enabled?'ENABLE_AI_PROVIDER':'DISABLE_AI_PROVIDER',String(id),{provider:r.rows[0].provider});
+    res.json({success:true,provider:r.rows[0]});
+  } catch(e:any){res.status(400).json({success:false,error:e?.message||'Impossible de modifier le provider.'});}
+});
+
+app.get('/api/admin/integrations/status', requireAuth, requireRole(RBAC.canAccessAdmin), async (_req,res)=>{
+  const pool=getPgPool(); let postgres:any={configured:Boolean(pool),connected:false,latencyMs:null,tables:0};
+  if(pool){const started=Date.now();try{const r=await pool.query(`SELECT COUNT(*)::int AS count FROM information_schema.tables WHERE table_schema='public'`);postgres={configured:true,connected:true,latencyMs:Date.now()-started,tables:Number(r.rows[0]?.count||0)};}catch{}}
+  let providers:any[]=[];try{providers=await listAIRouterAccounts();}catch{}
+  res.json({success:true,integrations:{entra:{configured:Boolean(process.env.MICROSOFT_CLIENT_ID&&process.env.MICROSOFT_CLIENT_SECRET&&process.env.MICROSOFT_TENANT_ID),tenantConfigured:Boolean(process.env.MICROSOFT_TENANT_ID),redirectConfigured:Boolean(process.env.MICROSOFT_REDIRECT_URI||process.env.APP_URL)},postgres,aiGateway:{configured:providers.length>0,active:providers.filter(x=>x.enabled).length,providers:providers.map(x=>({id:x.id,name:x.name,provider:x.provider,model:x.model,enabled:x.enabled,lastError:x.lastError}))},copilotStudio:{configured:Boolean(COPILOT_DIRECTLINE_TOKEN_ENDPOINT),agentConfigured:Boolean(COPILOT_AGENT_ID),tenantConfigured:Boolean(COPILOT_TENANT_ID)},documentAI:{supportedExtensions:['.xlsx','.xls','.csv','.pdf','.docx','.txt','.md','.json'],maxFileSizeMb:10,maxFiles:10,semanticProcessing:true}}});
 });
 
 app.post('/api/admin/copilot/test', requireAuth, requireRole(RBAC.canAccessAdmin), async (req: Request, res: Response) => {
@@ -1644,6 +1663,14 @@ function canViewProject(project: Project, user: MicrosoftSessionUser): boolean {
   return false;
 }
 
+function requireProjectAccess(req: Request, res: Response, next: NextFunction) {
+  const project = dbStore.getProjectById(String(req.params.id));
+  if (!project) return res.status(404).json({error:'Projet introuvable.'});
+  if (!canViewProject(project, currentUser(req))) return res.status(403).json({error:'Vous n’avez pas accès à ce projet.'});
+  (req as any).project = project;
+  next();
+}
+
 app.get('/api/projects', (req: Request, res: Response) => {
   const user = currentUser(req);
   if (user.role === 'ADMINISTRATEUR') return res.status(403).json({ error: 'Les administrateurs système utilisent uniquement la console d’administration.' });
@@ -2072,7 +2099,7 @@ app.get('/api/copilot-studio/status', requireAuth, (req: Request, res: Response)
 });
 
 // API: chat Copilot Studio via Direct Line. Le token reste côté serveur.
-app.post('/api/projects/:id/copilot-studio', upload.array('files', 10), requireRole(RBAC.canManageProject), async (req: Request, res: Response) => {
+app.post('/api/projects/:id/copilot-studio', upload.array('files', 10), requireRole(RBAC.canManageProject), requireProjectAccess, async (req: Request, res: Response) => {
   try {
     const project = dbStore.getProjectById(String(req.params.id));
     if (!project) return res.status(404).json({ error: 'Projet introuvable.' });
@@ -2109,7 +2136,7 @@ app.post('/api/copilot/actions', requireClarityApiKey, async (req: Request, res:
 });
 
 // API: mémoire du Copilot pour un projet
-app.get('/api/projects/:id/copilot', requireRole(RBAC.canManageProject), async (req: Request, res: Response) => {
+app.get('/api/projects/:id/copilot', requireRole(RBAC.canManageProject), requireProjectAccess, async (req: Request, res: Response) => {
   try {
     const project=dbStore.getProjectById(String(req.params.id));
     if(!project) return res.status(404).json({error:'Projet introuvable.'});
@@ -2118,8 +2145,26 @@ app.get('/api/projects/:id/copilot', requireRole(RBAC.canManageProject), async (
   } catch(e:any) { res.status(500).json({error:e?.message||'Mémoire Copilot indisponible.'}); }
 });
 
+// API: ingestion documentaire IA — fichier -> extraction -> raisonnement IA -> propositions CRUD
+app.post('/api/projects/:id/ai/intake', upload.array('files', 10), requireRole(RBAC.canManageProject), requireProjectAccess, async (req: Request, res: Response) => {
+  try {
+    const project=(req as any).project as Project;
+    const files=((req as any).files||[]) as Express.Multer.File[];
+    if(!files.length) return res.status(400).json({error:'Au moins un fichier est requis.'});
+    const allowedExt=new Set(['.xlsx','.xls','.csv','.pdf','.docx','.txt','.md','.json']);
+    const invalid=files.filter(f=>!allowedExt.has(path.extname(f.originalname||'').toLowerCase()));
+    if(invalid.length) return res.status(400).json({error:`Format non supporté: ${invalid.map(f=>f.originalname).join(', ')}`});
+    const totalBytes=files.reduce((n,f)=>n+f.size,0);
+    if(totalBytes>50*1024*1024) return res.status(413).json({error:'La taille cumulée des fichiers dépasse 50 Mo.'});
+    const message=String(req.body?.message||'').trim()||'Analyse les fichiers, reconstruis les informations métier et propose les ajouts ou corrections pertinents dans le projet. Ne modifie rien sans confirmation.';
+    const result=await runGatewayCopilot(project,files,message,currentUser(req));
+    const actions=Array.isArray(result.actions)?result.actions:[];
+    res.json({success:true,data:{projectId:project.id,files:files.map(f=>({name:f.originalname,size:f.size,type:f.mimetype})),reply:result.reply||'',analysis:result.analysis||{},actions,confirmation:{required:actions.length>0,proposalCount:actions.length},provider:result.provider,account:result.account,model:result.model,applied:[]}});
+  }catch(e:any){console.error('AI document intake error:',e);res.status(Number(e?.status)||500).json({error:e?.message||'Traitement IA des documents impossible.'});}
+});
+
 // API: CLARITY PM Copilot — chat + analyse documentaire + actions projet
-app.get('/api/projects/:id/copilot/proposals.json', requireRole(RBAC.canManageProject), async (req: Request, res: Response) => {
+app.get('/api/projects/:id/copilot/proposals.json', requireRole(RBAC.canManageProject), requireProjectAccess, async (req: Request, res: Response) => {
   try {
     const project=dbStore.getProjectById(String(req.params.id));
     if(!project) return res.status(404).json({error:'Projet introuvable.'});
@@ -2129,7 +2174,7 @@ app.get('/api/projects/:id/copilot/proposals.json', requireRole(RBAC.canManagePr
   } catch(e:any) { res.status(500).json({error:e?.message||'Impossible de charger le JSON des propositions.'}); }
 });
 
-app.post('/api/projects/:id/copilot', upload.array('files', 10), requireRole(RBAC.canManageProject), async (req: Request, res: Response) => {
+app.post('/api/projects/:id/copilot', upload.array('files', 10), requireRole(RBAC.canManageProject), requireProjectAccess, async (req: Request, res: Response) => {
   try {
     const project = dbStore.getProjectById(String(req.params.id));
     if (!project) return res.status(404).json({ error:'Projet introuvable.' });
@@ -2153,7 +2198,7 @@ app.post('/api/projects/:id/copilot', upload.array('files', 10), requireRole(RBA
 });
 
 // API: refuser les propositions en attente sans modifier le projet
-app.post('/api/projects/:id/copilot/reject', requireRole(RBAC.canManageProject), async (req: Request, res: Response) => {
+app.post('/api/projects/:id/copilot/reject', requireRole(RBAC.canManageProject), requireProjectAccess, async (req: Request, res: Response) => {
   try {
     const project=dbStore.getProjectById(String(req.params.id));
     if(!project) return res.status(404).json({error:'Projet introuvable.'});
@@ -2164,7 +2209,7 @@ app.post('/api/projects/:id/copilot/reject', requireRole(RBAC.canManageProject),
 });
 
 // API: appliquer explicitement les propositions du Copilot après confirmation utilisateur
-app.post('/api/projects/:id/copilot/apply', requireRole(RBAC.canManageProject), async (req: Request, res: Response) => {
+app.post('/api/projects/:id/copilot/apply', requireRole(RBAC.canManageProject), requireProjectAccess, async (req: Request, res: Response) => {
   try {
     const project = dbStore.getProjectById(String(req.params.id));
     if (!project) return res.status(404).json({ error:'Projet introuvable.' });

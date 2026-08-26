@@ -1,63 +1,46 @@
 import React, { useMemo, useState } from 'react';
-import { CheckCircle2, FileJson, Loader2, Upload, X, AlertTriangle } from 'lucide-react';
+import { CheckCircle2, FileJson, FileSearch, Loader2, Upload, X, AlertTriangle, Sparkles, Check } from 'lucide-react';
 import { UserRole } from '../types';
 
-type ImportType = 'projects' | 'tasks' | 'milestones';
+type ImportType = 'projects'|'tasks'|'milestones';
+type Mode = 'AI'|'JSON';
 interface Props { isOpen:boolean; onClose:()=>void; role:UserRole; projectId?:string; onImported?:()=>void; }
+const labels:Record<ImportType,string>={projects:'Projets',tasks:'Tâches',milestones:'Jalons'};
+const allowed=(role:UserRole):ImportType[]=>role==='DIRECTEUR_PROJETS'?['projects','tasks','milestones']:role==='ADMINISTRATEUR'?[]:['tasks','milestones'];
 
-const labels: Record<ImportType,string> = { projects:'Projets', tasks:'Tâches', milestones:'Jalons' };
-const allowed = (role:UserRole):ImportType[] => role==='DIRECTEUR_PROJETS' ? ['projects','tasks','milestones'] : role==='ADMINISTRATEUR' ? [] : ['tasks','milestones'];
-
-export const JsonImportModal: React.FC<Props> = ({isOpen,onClose,role,onImported}) => {
-  const types=useMemo(()=>allowed(role),[role]);
-  const [type,setType]=useState<ImportType>(types[0]||'tasks');
-  const [items,setItems]=useState<any[]>([]);
-  const [fileName,setFileName]=useState('');
-  const [preview,setPreview]=useState<any>(null);
-  const [loading,setLoading]=useState(false);
-  const [error,setError]=useState('');
-  if(!isOpen) return null;
-
-  const readFile=(file:File)=>{
-    setError(''); setPreview(null); setFileName(file.name);
-    const reader=new FileReader();
-    reader.onload=()=>{ try {
-      const raw=JSON.parse(String(reader.result||''));
-      const arr=Array.isArray(raw) ? raw : Array.isArray(raw[type]) ? raw[type] : [];
-      if(!arr.length) throw new Error(`Le JSON doit contenir un tableau « ${type} » ou être directement un tableau.`);
-      setItems(arr);
-    } catch(e:any){ setItems([]); setError(e?.message||'JSON invalide.'); } };
-    reader.readAsText(file);
-  };
-
-  const validate=async()=>{
-    setLoading(true); setError('');
-    try{
-      const r=await fetch('/api/import-json/validate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type,items})});
-      const d=await r.json(); if(!r.ok) throw new Error(d.error||'Validation impossible.');
-      setPreview(d.data);
-    }catch(e:any){setError(e?.message||'Validation impossible.');}finally{setLoading(false);}
-  };
-  const apply=async()=>{
-    if(!preview?.items?.length) return;
-    setLoading(true); setError('');
-    try{
-      const r=await fetch('/api/import-json/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type,items:preview.items})});
-      const d=await r.json(); if(!r.ok) throw new Error(d.error||'Import impossible.');
-      setPreview({...preview,applied:d.data}); setItems([]); onImported?.();
-    }catch(e:any){setError(e?.message||'Import impossible.');}finally{setLoading(false);}
-  };
-  return <div className="fixed inset-0 z-[80] bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4">
-    <div className="bg-white rounded-2xl w-full max-w-3xl max-h-[90vh] overflow-hidden shadow-2xl flex flex-col">
-      <div className="p-5 border-b flex justify-between items-center"><div><h2 className="font-bold text-slate-900 flex items-center gap-2"><FileJson className="w-5 h-5 text-indigo-600"/> Import JSON CLARITY</h2><p className="text-xs text-slate-500 mt-1">Import contrôlé par rôle, validation serveur puis confirmation avant CRUD.</p></div><button onClick={onClose}><X/></button></div>
-      <div className="p-5 overflow-y-auto space-y-5">
-        <div className="flex gap-2 flex-wrap">{types.map(t=><button key={t} onClick={()=>{setType(t);setItems([]);setPreview(null);setError('')}} className={`px-4 py-2 rounded-xl text-sm font-semibold border ${type===t?'bg-indigo-600 text-white border-indigo-600':'bg-white text-slate-700 border-slate-300'}`}>{labels[t]}</button>)}</div>
-        <div className="rounded-xl border-2 border-dashed border-slate-300 p-6 text-center"><Upload className="mx-auto w-7 h-7 text-indigo-500"/><p className="font-semibold mt-2">Choisir un fichier JSON</p><p className="text-xs text-slate-500 mb-3">{type==='projects'?'Un tableau de projets.':'Un tableau de '+labels[type].toLowerCase()+' avec projectId ou projectCode.'}</p><input type="file" accept="application/json,.json" onChange={e=>{const f=e.target.files?.[0];if(f)readFile(f)}}/></div>
-        {fileName&&<div className="text-xs text-slate-600">📎 {fileName} · {items.length} élément(s)</div>}
-        {error&&<div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-sm"><AlertTriangle className="inline w-4 h-4 mr-1"/>{error}</div>}
-        {preview&&<div className="space-y-3"><div className="p-4 rounded-xl bg-slate-50 border"><b>{preview.validCount}</b> valide(s), <b>{preview.errorCount}</b> erreur(s), <b>{preview.duplicateCount}</b> doublon(s).</div>{preview.errors?.length>0&&<div className="p-3 bg-rose-50 rounded-xl text-xs text-rose-700 max-h-40 overflow-auto">{preview.errors.map((e:any,i:number)=><div key={i}>• {e}</div>)}</div>}<div className="max-h-56 overflow-auto border rounded-xl divide-y">{preview.items?.map((it:any,i:number)=><div key={i} className="p-3 text-xs"><b>{it.name||it.title||it.code}</b>{it.projectCode&&<span className="ml-2 text-slate-500">Projet {it.projectCode}</span>}</div>)}</div>{preview.applied&&<div className="p-4 bg-emerald-50 text-emerald-800 rounded-xl"><CheckCircle2 className="inline w-4 h-4 mr-1"/>Import terminé : {preview.applied.imported} élément(s).</div>}</div>}
-      </div>
-      <div className="p-4 border-t bg-slate-50 flex justify-end gap-2"><button onClick={onClose} className="px-4 py-2 rounded-xl border">Fermer</button>{!preview?.applied&&<><button onClick={validate} disabled={!items.length||loading} className="px-4 py-2 rounded-xl bg-indigo-600 text-white font-semibold disabled:opacity-50">{loading?<Loader2 className="inline w-4 h-4 animate-spin mr-2"/>:null}Valider</button><button onClick={apply} disabled={!preview?.validCount||preview.errorCount>0||loading} className="px-4 py-2 rounded-xl bg-emerald-600 text-white font-semibold disabled:opacity-50">{loading?<Loader2 className="inline w-4 h-4 animate-spin mr-2"/>:null}Appliquer</button></>}</div>
-    </div>
-  </div>;
+export const JsonImportModal:React.FC<Props>=({isOpen,onClose,role,projectId,onImported})=>{
+ const types=useMemo(()=>allowed(role),[role]);
+ const [mode,setMode]=useState<Mode>(projectId?'AI':'JSON');
+ const [type,setType]=useState<ImportType>(types[0]||'tasks');
+ const [items,setItems]=useState<any[]>([]); const [files,setFiles]=useState<File[]>([]);
+ const [fileName,setFileName]=useState(''); const [preview,setPreview]=useState<any>(null); const [loading,setLoading]=useState(false); const [error,setError]=useState('');
+ const [message,setMessage]=useState(''); const [selected,setSelected]=useState<string[]>([]);
+ if(!isOpen)return null;
+ const reset=()=>{setItems([]);setFiles([]);setFileName('');setPreview(null);setError('');setSelected([]);setMessage('');};
+ const readJson=(file:File)=>{setError('');setPreview(null);setFileName(file.name);const reader=new FileReader();reader.onload=()=>{try{const raw=JSON.parse(String(reader.result||''));const arr=Array.isArray(raw)?raw:Array.isArray(raw[type])?raw[type]:[];if(!arr.length)throw new Error(`Le JSON doit contenir un tableau « ${type} » ou être directement un tableau.`);setItems(arr);}catch(e:any){setItems([]);setError(e?.message||'JSON invalide.')}};reader.readAsText(file)};
+ const validate=async()=>{setLoading(true);setError('');try{const r=await fetch('/api/import-json/validate',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({type,items})});const d=await r.json();if(!r.ok)throw new Error(d.error||'Validation impossible.');setPreview(d.data)}catch(e:any){setError(e?.message||'Validation impossible.')}finally{setLoading(false)}};
+ const applyJson=async()=>{if(!preview?.items?.length)return;setLoading(true);setError('');try{const r=await fetch('/api/import-json/confirm',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({type,items:preview.items})});const d=await r.json();if(!r.ok)throw new Error(d.error||'Import impossible.');setPreview({...preview,applied:d.data});setItems([]);onImported?.()}catch(e:any){setError(e?.message||'Import impossible.')}finally{setLoading(false)}};
+ const analyzeAI=async()=>{if(!projectId||!files.length)return;setLoading(true);setError('');setPreview(null);try{const form=new FormData();files.forEach(f=>form.append('files',f));form.append('message',message||'Analyse les documents et reconstruis les données utiles du projet. Identifie les tâches, jalons, risques, dates, budget, responsables, décisions et corrections. Propose uniquement les modifications justifiées par les sources.');const r=await fetch(`/api/projects/${encodeURIComponent(projectId)}/ai/intake`,{method:'POST',credentials:'include',body:form});const d=await r.json();if(!r.ok)throw new Error(d.error||'Analyse IA impossible.');const data=d.data||{};const ids=(data.actions||[]).map((a:any)=>String(a.proposalId||a._key||'')).filter(Boolean);setSelected(ids);setPreview(data)}catch(e:any){setError(e?.message||'Analyse IA impossible.')}finally{setLoading(false)}};
+ const applyAI=async()=>{if(!projectId||!selected.length)return;setLoading(true);setError('');try{const r=await fetch(`/api/projects/${encodeURIComponent(projectId)}/copilot/apply`,{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmed:true,proposalIds:selected})});const d=await r.json();if(!r.ok)throw new Error(d.error||'Application impossible.');setPreview((p:any)=>({...p,applied:d.data}));setSelected([]);onImported?.()}catch(e:any){setError(e?.message||'Application impossible.')}finally{setLoading(false)}};
+ const toggle=(id:string)=>setSelected(v=>v.includes(id)?v.filter(x=>x!==id):[...v,id]);
+ return <div className="fixed inset-0 z-[80] bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4"><div className="bg-white rounded-2xl w-full max-w-5xl max-h-[92vh] overflow-hidden shadow-2xl flex flex-col">
+  <div className="p-5 border-b flex justify-between items-center"><div><h2 className="font-bold text-slate-900 flex items-center gap-2"><Sparkles className="w-5 h-5 text-indigo-600"/> Import & analyse des données</h2><p className="text-xs text-slate-500 mt-1">Les fichiers sont extraits côté serveur puis analysés par le moteur IA configuré. Aucune modification n'est appliquée sans confirmation.</p></div><button onClick={onClose}><X/></button></div>
+  <div className="px-5 pt-4 flex gap-2"><button onClick={()=>{setMode('AI');reset()}} disabled={!projectId} className={`px-4 py-2 rounded-xl text-sm font-semibold border ${mode==='AI'?'bg-indigo-600 text-white border-indigo-600':'bg-white text-slate-700 border-slate-300'} disabled:opacity-40`}><Sparkles className="inline w-4 h-4 mr-1"/> Analyse IA fichier</button><button onClick={()=>{setMode('JSON');reset()}} className={`px-4 py-2 rounded-xl text-sm font-semibold border ${mode==='JSON'?'bg-slate-900 text-white border-slate-900':'bg-white text-slate-700 border-slate-300'}`}><FileJson className="inline w-4 h-4 mr-1"/> Import JSON contrôlé</button></div>
+  <div className="p-5 overflow-y-auto space-y-5">
+   {mode==='AI'?<>
+    <div className="rounded-2xl bg-indigo-50 border border-indigo-100 p-4 text-xs text-indigo-900"><b>Pipeline :</b> Excel/CSV/PDF/DOCX/TXT/MD/JSON → extraction structurée → comparaison avec le projet → IA → propositions Tâches/Jalons/Risques/Projet → validation humaine.</div>
+    <div className="rounded-xl border-2 border-dashed border-slate-300 p-7 text-center"><FileSearch className="mx-auto w-8 h-8 text-indigo-500"/><p className="font-semibold mt-2">Déposer les fichiers métier à analyser</p><p className="text-xs text-slate-500 mb-3">Jusqu'à 10 fichiers de 10 Mo. Formats : XLSX, XLS, CSV, PDF, DOCX, TXT, MD, JSON.</p><input multiple type="file" accept=".xlsx,.xls,.csv,.pdf,.docx,.txt,.md,.json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={e=>{const fs=Array.from(e.target.files||[]) as File[];setFiles(fs);setFileName(fs.map(f=>f.name).join(' · '));setPreview(null);setError('')}}/></div>
+    <label className="text-xs font-semibold block">Consigne IA (optionnelle)<textarea value={message} onChange={e=>setMessage(e.target.value)} rows={3} className="mt-1 w-full rounded-xl border p-3 font-normal" placeholder="Ex. Compare le planning, le budget et les risques avec le projet actuel et prépare les corrections proposées."/></label>
+    {fileName&&<div className="text-xs text-slate-600">📎 {fileName}</div>}
+    {preview&&<div className="space-y-4"><div className="p-4 rounded-xl bg-slate-50 border"><div className="font-bold">{preview.provider} · {preview.model}</div><p className="text-sm mt-2 whitespace-pre-wrap">{preview.reply}</p></div><div className="grid md:grid-cols-4 gap-2">{['tasks','milestones','risks','corrections'].map(k=><div key={k} className="rounded-xl border p-3"><div className="text-[11px] uppercase text-slate-500">{k}</div><div className="text-xl font-bold">{preview.analysis?.elements?.[k]?.length||0}</div></div>)}</div>{preview.actions?.length?<div className="border rounded-xl overflow-hidden"><div className="p-3 bg-slate-50 font-bold text-sm">Propositions à appliquer</div><div className="divide-y">{preview.actions.map((a:any,i:number)=>{const id=String(a.proposalId||a._key||i);const title=a.task?.title||a.milestone?.title||a.risk?.title||a.patch?.name||a.type;return <label key={id} className="p-3 flex gap-3 items-start cursor-pointer"><input type="checkbox" checked={selected.includes(id)} onChange={()=>toggle(id)} className="mt-1"/><span className="text-sm"><b>{title}</b><span className="ml-2 text-[11px] text-slate-500">{a.type}</span>{a.reason&&<span className="block text-xs text-slate-500 mt-1">{a.reason}</span>}{a.source&&<span className="block text-[11px] text-indigo-600 mt-1">Source : {a.source}</span>}</span></label>})}</div></div>:<div className="p-4 rounded-xl bg-emerald-50 text-emerald-800 text-sm"><CheckCircle2 className="inline w-4 h-4 mr-1"/>Aucune modification proposée. L'analyse est informative.</div>}{preview.applied&&<div className="p-4 rounded-xl bg-emerald-50 text-emerald-800 text-sm"><CheckCircle2 className="inline w-4 h-4 mr-1"/>{preview.applied.appliedCount||preview.applied.applied?.length||0} proposition(s) appliquée(s).</div>}</div>}
+   </>:<>
+    <div className="flex gap-2 flex-wrap">{types.map(t=><button key={t} onClick={()=>{setType(t);setItems([]);setPreview(null);setError('')}} className={`px-4 py-2 rounded-xl text-sm font-semibold border ${type===t?'bg-indigo-600 text-white border-indigo-600':'bg-white text-slate-700 border-slate-300'}`}>{labels[t]}</button>)}</div>
+    <div className="rounded-xl border-2 border-dashed border-slate-300 p-6 text-center"><Upload className="mx-auto w-7 h-7 text-indigo-500"/><p className="font-semibold mt-2">Choisir un fichier JSON</p><input type="file" accept="application/json,.json" onChange={e=>{const f=e.target.files?.[0];if(f)readJson(f)}}/></div>
+    {fileName&&<div className="text-xs text-slate-600">📎 {fileName} · {items.length} élément(s)</div>}
+    {preview&&<div className="space-y-3"><div className="p-4 rounded-xl bg-slate-50 border"><b>{preview.validCount}</b> valide(s), <b>{preview.errorCount}</b> erreur(s), <b>{preview.duplicateCount}</b> doublon(s).</div>{preview.errors?.length>0&&<div className="p-3 bg-rose-50 rounded-xl text-xs text-rose-700 max-h-40 overflow-auto">{preview.errors.map((e:any,i:number)=><div key={i}>• {e}</div>)}</div>}{preview.applied&&<div className="p-4 bg-emerald-50 text-emerald-800 rounded-xl"><CheckCircle2 className="inline w-4 h-4 mr-1"/>Import terminé : {preview.applied.imported} élément(s).</div>}</div>}
+   </>}
+   {error&&<div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-sm"><AlertTriangle className="inline w-4 h-4 mr-1"/>{error}</div>}
+  </div>
+  <div className="p-4 border-t bg-slate-50 flex justify-end gap-2"><button onClick={onClose} className="px-4 py-2 rounded-xl border">Fermer</button>{mode==='AI'?<><button onClick={analyzeAI} disabled={!files.length||loading||!!preview?.applied} className="px-4 py-2 rounded-xl bg-indigo-600 text-white font-semibold disabled:opacity-50">{loading?<Loader2 className="inline w-4 h-4 animate-spin mr-2"/>:<Sparkles className="inline w-4 h-4 mr-2"/>}Analyser avec IA</button><button onClick={applyAI} disabled={!selected.length||loading||!!preview?.applied} className="px-4 py-2 rounded-xl bg-emerald-600 text-white font-semibold disabled:opacity-50"><Check className="inline w-4 h-4 mr-1"/>Appliquer {selected.length||''}</button></>:<><button onClick={validate} disabled={!items.length||loading} className="px-4 py-2 rounded-xl bg-indigo-600 text-white font-semibold disabled:opacity-50">Valider</button><button onClick={applyJson} disabled={!preview?.validCount||preview.errorCount>0||loading} className="px-4 py-2 rounded-xl bg-emerald-600 text-white font-semibold disabled:opacity-50">Appliquer</button></>}</div>
+ </div></div>;
 };

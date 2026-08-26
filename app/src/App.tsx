@@ -595,7 +595,7 @@ export const App: React.FC = () => {
       )}
 
 
-      <JsonImportModal isOpen={isJsonImportOpen} onClose={() => setIsJsonImportOpen(false)} role={currentUser.role} onImported={async () => { const r=await fetch('/api/projects'); const d=await r.json(); if(r.ok&&Array.isArray(d.data)) setProjects(d.data); }} />
+      <JsonImportModal isOpen={isJsonImportOpen} onClose={() => setIsJsonImportOpen(false)} role={currentUser.role} projectId={activeProject?.id} onImported={async () => { const r=await fetch('/api/projects'); const d=await r.json(); if(r.ok&&Array.isArray(d.data)) setProjects(d.data); }} />
 
       {/* 7. Microsoft 365 / Entra ID Authentication Modal */}
       <MicrosoftAuthModal

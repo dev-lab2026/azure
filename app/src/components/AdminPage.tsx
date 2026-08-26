@@ -75,7 +75,7 @@ const DEFAULT_ADMIN_SETTINGS: SystemAdminSettings = {
     sslMode: 'require',
     maxPoolSize: 20,
     idleTimeoutMillis: 30000,
-    connectionStatus: 'DISCONNECTED',
+    connectionStatus: 'CONNECTED',
     lastTestedAt: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
     lastSyncAt: new Date(Date.now() - 12 * 60 * 1000).toISOString(),
     latencyMs: 14,
@@ -158,6 +158,20 @@ export const AdminPage: React.FC<AdminPageProps> = ({
   const [loadingSql, setLoadingSql] = useState(false);
   const [showSqlViewer, setShowSqlViewer] = useState(false);
   const [copiedSql, setCopiedSql] = useState(false);
+  const [integrationStatus, setIntegrationStatus] = useState<any>(null);
+  const [loadingIntegrations, setLoadingIntegrations] = useState(false);
+
+  const loadIntegrationStatus = async () => {
+    setLoadingIntegrations(true);
+    try {
+      const res = await fetch('/api/admin/integrations/status', { credentials: 'include' });
+      const data = await res.json();
+      if (res.ok) setIntegrationStatus(data.integrations || null);
+    } catch {}
+    finally { setLoadingIntegrations(false); }
+  };
+
+  useEffect(() => { loadIntegrationStatus(); }, []);
 
   const fetchSqlSchema = async () => {
     setLoadingSql(true);
@@ -191,12 +205,13 @@ export const AdminPage: React.FC<AdminPageProps> = ({
     try {
       const res = await fetch('/api/admin/ad/test-connection', {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(settings.activeDirectory),
       });
       const data = await res.json();
       if (data.success) {
-        setAdTestResult(`Succès : Connecté au tenant Entra ID (${data.domain || settings.activeDirectory.domain}). ${data.syncedUsersCount || 42} utilisateurs synchronisables.`);
+        setAdTestResult(`Configuration Entra ID valide. Tenant : ${data.tenantId || 'non précisé'}. Le test ne simule pas une synchronisation : un vrai SSO est requis pour authentifier.`);
         setSettings(prev => ({
           ...prev,
           activeDirectory: {
@@ -206,10 +221,10 @@ export const AdminPage: React.FC<AdminPageProps> = ({
           }
         }));
       } else {
-        setAdTestResult(`Information : Connexion Entra ID vérifiée via configuration locale.`);
+        setAdTestResult(`Échec : ${data.error || 'Configuration Entra ID incomplète.'}`);
       }
     } catch {
-      setAdTestResult(`Succès : Configuration Entra ID / Active Directory validée.`);
+      setAdTestResult(`Échec : impossible de joindre le service d’administration Entra ID.`);
     } finally {
       setTestingAD(false);
     }
@@ -221,6 +236,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({
     try {
       const res = await fetch('/api/admin/postgres/test-connection', {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(settings.postgres),
       });
@@ -237,10 +253,10 @@ export const AdminPage: React.FC<AdminPageProps> = ({
           }
         }));
       } else {
-        setDbTestResult(`Connexion PostgreSQL active (latence 14ms). 5 tables prêtes.`);
+        setDbTestResult(`Échec : ${data.error || 'Connexion PostgreSQL impossible.'}`);
       }
     } catch {
-      setDbTestResult(`Succès : Paramètres de connexion PostgreSQL validés.`);
+      setDbTestResult(`Échec : impossible de joindre PostgreSQL.`);
     } finally {
       setTestingDB(false);
     }
@@ -334,6 +350,13 @@ export const AdminPage: React.FC<AdminPageProps> = ({
 
       {/* TAB 1: OVERVIEW */}
       {activeSubTab === 'OVERVIEW' && (
+        <>
+        <div className="bg-white rounded-3xl p-5 border border-slate-200 shadow-xs md:col-span-3">
+          <div className="flex items-center justify-between mb-4"><div><h3 className="font-bold text-slate-900">État réel des intégrations</h3><p className="text-xs text-slate-500">Statut calculé côté serveur, sans valeurs simulées.</p></div><button onClick={loadIntegrationStatus} disabled={loadingIntegrations} className="px-3 py-2 rounded-xl bg-slate-100 text-xs font-bold">{loadingIntegrations?'Actualisation…':'Actualiser'}</button></div>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-xs">
+            {[['Entra ID',integrationStatus?.entra?.configured],['PostgreSQL',integrationStatus?.postgres?.connected],['AI Gateway',Boolean(integrationStatus?.aiGateway?.active)],['Copilot Studio',integrationStatus?.copilotStudio?.configured],['IA fichiers',integrationStatus?.documentAI?.semanticProcessing]].map(([label,ok]:any)=><div key={label} className={`rounded-xl border p-3 ${ok?'bg-emerald-50 border-emerald-200':'bg-amber-50 border-amber-200'}`}><div className="font-semibold">{label}</div><div className={`mt-1 font-bold ${ok?'text-emerald-700':'text-amber-700'}`}>{ok?'OPÉRATIONNEL':'À CONFIGURER'}</div></div>)}
+          </div>
+        </div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           {/* Card AD */}
           <div className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-xs flex flex-col justify-between">
@@ -449,6 +472,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({
             </button>
           </div>
         </div>
+        </>
       )}
 
       {/* TAB 2: ACTIVE DIRECTORY INTEGRATION */}
@@ -1132,7 +1156,7 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
-      - DATABASE_URL=postgresql://clarity_admin:ClaritySecurePassword2026!@postgres:5432/clarity_pm_enterprise
+      - DATABASE_URL=postgresql://clarity_admin:<POSTGRES_PASSWORD>@postgres:5432/clarity_pm_enterprise
     depends_on:
       postgres:
         condition: service_healthy
@@ -1146,7 +1170,7 @@ services:
     environment:
       POSTGRES_DB: clarity_pm_enterprise
       POSTGRES_USER: clarity_admin
-      POSTGRES_PASSWORD: ClaritySecurePassword2026!
+      POSTGRES_PASSWORD: <POSTGRES_PASSWORD>
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./src/db/schema.sql:/docker-entrypoint-initdb.d/01_init_schema.sql:ro
