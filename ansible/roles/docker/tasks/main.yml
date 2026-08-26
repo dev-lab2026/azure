@@ -24,12 +24,12 @@
 
 - name: Display Git commit
   ansible.builtin.debug:
-    msg: "Application commit: {{ git_commit.stdout }}"
+    msg: "Application repository commit: {{ git_commit.stdout }}"
 
 - name: Validate Docker Compose syntax
   ansible.builtin.command:
     cmd: docker compose -f docker-compose.yml config
-    chdir: "{{ app_dir }}"
+    chdir: "{{ app_dir }}/app"
   register: compose_config
   changed_when: false
 
@@ -40,7 +40,7 @@
 - name: Build and start application
   ansible.builtin.command:
     cmd: docker compose -f docker-compose.yml up -d --build
-    chdir: "{{ app_dir }}"
+    chdir: "{{ app_dir }}/app"
   register: compose_up
 
 - name: Show Docker Compose output
