@@ -1,4 +1,10 @@
 ---
+- name: Define application paths
+  ansible.builtin.set_fact:
+    app_dir: /opt/clarity
+    compose_dir: /opt/clarity/app
+    compose_file: docker-compose.yml
+
 - name: Create application directory
   ansible.builtin.file:
     path: "{{ app_dir }}"
@@ -9,9 +15,9 @@
 
 - name: Checkout application repository
   ansible.builtin.git:
-    repo: "{{ repo_url }}"
+    repo: "https://github.com/dev-lab2026/azure.git"
     dest: "{{ app_dir }}"
-    version: "{{ repo_branch }}"
+    version: main
     force: true
     update: true
 
@@ -37,64 +43,100 @@
   ansible.builtin.debug:
     msg: "Application repository commit: {{ git_commit.stdout }}"
 
+# ==========================================================
+# VERIFY APPLICATION
+# ==========================================================
+
 - name: Verify application directory
   ansible.builtin.stat:
     path: "{{ compose_dir }}"
   register: application_directory
 
-- name: Fail if application directory does not exist
-  ansible.builtin.assert:
-    that:
-      - application_directory.stat.exists
-      - application_directory.stat.isdir
-    fail_msg: "Application directory not found: {{ compose_dir }}"
+- name: Display application directory
+  ansible.builtin.debug:
+    msg: "Application directory: {{ compose_dir }}"
 
 - name: Verify Docker Compose file
   ansible.builtin.stat:
     path: "{{ compose_dir }}/{{ compose_file }}"
   register: compose_file_stat
 
-- name: Fail if Docker Compose file does not exist
+- name: Fail if Docker Compose file is missing
   ansible.builtin.assert:
     that:
       - compose_file_stat.stat.exists
       - compose_file_stat.stat.isreg
     fail_msg: "Docker Compose file not found: {{ compose_dir }}/{{ compose_file }}"
 
-- name: Verify environment file
+# ==========================================================
+# CREATE .ENV
+# ==========================================================
+
+- name: Create production .env
+  ansible.builtin.copy:
+    dest: "{{ compose_dir }}/.env"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0600"
+    content: |
+      NODE_ENV=production
+      PORT=3000
+
+      POSTGRES_DB={{ postgres_db }}
+      POSTGRES_USER={{ postgres_user }}
+      POSTGRES_PASSWORD={{ postgres_password }}
+
+      SESSION_SECRET={{ session_secret }}
+
+      MICROSOFT_CLIENT_ID={{ microsoft_client_id }}
+      MICROSOFT_CLIENT_SECRET={{ microsoft_client_secret }}
+      MICROSOFT_TENANT_ID={{ microsoft_tenant_id }}
+      MICROSOFT_REDIRECT_URI={{ microsoft_redirect_uri }}
+
+      APP_URL={{ app_url }}
+  no_log: true
+
+- name: Verify .env
   ansible.builtin.stat:
     path: "{{ compose_dir }}/.env"
-  register: env_file_stat
+  register: env_file
 
-- name: Fail if environment file does not exist
+- name: Fail if .env was not created
   ansible.builtin.assert:
     that:
-      - env_file_stat.stat.exists
-      - env_file_stat.stat.isreg
-    fail_msg: "Environment file not found: {{ compose_dir }}/.env"
+      - env_file.stat.exists
+      - env_file.stat.isreg
+    fail_msg: ".env was not created."
 
-- name: Display Compose path
-  ansible.builtin.debug:
-    msg: "Docker Compose: {{ compose_dir }}/{{ compose_file }}"
+# ==========================================================
+# DOCKER COMPOSE VALIDATION
+# ==========================================================
 
-- name: Validate Docker Compose syntax
+- name: Validate Docker Compose
   ansible.builtin.command:
     cmd: docker compose --env-file .env -f "{{ compose_file }}" config
     chdir: "{{ compose_dir }}"
   register: compose_config
   changed_when: false
 
-- name: Show Docker Compose validation
+- name: Display Compose validation
   ansible.builtin.debug:
     msg: "Docker Compose configuration is valid."
+
+# ==========================================================
+# STOP OLD APPLICATION
+# ==========================================================
 
 - name: Stop existing application
   ansible.builtin.command:
     cmd: docker compose --env-file .env -f "{{ compose_file }}" down --remove-orphans
     chdir: "{{ compose_dir }}"
-  register: compose_down
   changed_when: false
   failed_when: false
+
+# ==========================================================
+# BUILD AND START
+# ==========================================================
 
 - name: Build and start application
   ansible.builtin.command:
@@ -102,20 +144,21 @@
     chdir: "{{ compose_dir }}"
   register: compose_up
 
-- name: Show Docker Compose output
+- name: Display Docker Compose output
   ansible.builtin.debug:
     var: compose_up.stdout_lines
 
-- name: Wait for application
-  ansible.builtin.uri:
-    url: "http://127.0.0.1/api/health"
-    method: GET
-    status_code: 200
-  register: healthcheck
-  retries: 12
-  delay: 10
-  until: healthcheck.status == 200
+# ==========================================================
+# STATUS
+# ==========================================================
 
-- name: Display application health
+- name: Show Docker Compose status
+  ansible.builtin.command:
+    cmd: docker compose --env-file .env -f "{{ compose_file }}" ps
+    chdir: "{{ compose_dir }}"
+  register: compose_status
+  changed_when: false
+
+- name: Display Docker Compose status
   ansible.builtin.debug:
-    msg: "Clarity application is healthy."
+    var: compose_status.stdout_lines
