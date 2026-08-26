@@ -1,5 +1,4 @@
 services:
-
   app:
     build:
       context: .
@@ -7,7 +6,6 @@ services:
 
     image: clarity-app:latest
     container_name: clarity-app
-
     restart: unless-stopped
 
     env_file:
@@ -17,21 +15,21 @@ services:
       NODE_ENV: production
       PORT: 3000
 
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}"
 
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       POSTGRES_SSL: disable
 
-      MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID:-}
-      MICROSOFT_CLIENT_SECRET: ${MICROSOFT_CLIENT_SECRET:-}
-      MICROSOFT_TENANT_ID: ${MICROSOFT_TENANT_ID:-}
-      MICROSOFT_REDIRECT_URI: ${MICROSOFT_REDIRECT_URI:-}
+      MICROSOFT_CLIENT_ID: "${MICROSOFT_CLIENT_ID:-}"
+      MICROSOFT_CLIENT_SECRET: "${MICROSOFT_CLIENT_SECRET:-}"
+      MICROSOFT_TENANT_ID: "${MICROSOFT_TENANT_ID:-}"
+      MICROSOFT_REDIRECT_URI: "${MICROSOFT_REDIRECT_URI:-}"
 
-      ENTRA_CLIENT_ID: ${MICROSOFT_CLIENT_ID:-}
-      ENTRA_TENANT_ID: ${MICROSOFT_TENANT_ID:-}
+      ENTRA_CLIENT_ID: "${MICROSOFT_CLIENT_ID:-}"
+      ENTRA_TENANT_ID: "${MICROSOFT_TENANT_ID:-}"
 
-      APP_URL: ${APP_URL:-http://localhost}
+      APP_URL: "${APP_URL:-http://localhost}"
 
     ports:
       - "80:3000"
@@ -45,31 +43,30 @@ services:
 
     healthcheck:
       test:
-        [
-          "CMD",
-          "node",
-          "-e",
-          "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
-        ]
+        - CMD
+        - node
+        - -e
+        - >-
+          fetch('http://127.0.0.1:3000/api/health')
+          .then(r => process.exit(r.ok ? 0 : 1))
+          .catch(() => process.exit(1))
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 20s
 
-
   postgres:
     image: postgres:16-alpine
     container_name: clarity-postgres
-
     restart: unless-stopped
 
     env_file:
       - .env
 
     environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: "${POSTGRES_DB}"
+      POSTGRES_USER: "${POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
 
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -80,23 +77,17 @@ services:
 
     healthcheck:
       test:
-        [
-          "CMD-SHELL",
-          "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"
-        ]
+        - CMD-SHELL
+        - "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
 
-
 volumes:
-
   postgres_data:
     name: clarity-postgres-data
 
-
 networks:
-
   clarity_network:
     driver: bridge
