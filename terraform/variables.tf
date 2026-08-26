@@ -17,10 +17,30 @@ variable "location" {
 }
 
 variable "resource_group_name" {
-  description = "Azure Resource Group name. Leave empty to generate automatically."
+  description = "Azure Resource Group name."
   type        = string
   default     = ""
 }
+
+# ==========================================================
+# NETWORK
+# ==========================================================
+
+variable "vnet_address_space" {
+  description = "Virtual Network CIDR."
+  type        = list(string)
+  default     = ["10.20.0.0/16"]
+}
+
+variable "subnet_address_prefixes" {
+  description = "Application subnet CIDR."
+  type        = list(string)
+  default     = ["10.20.1.0/24"]
+}
+
+# ==========================================================
+# VM
+# ==========================================================
 
 variable "vm_size" {
   description = "Azure VM SKU."
@@ -34,6 +54,10 @@ variable "admin_username" {
   default     = "azureadmin"
 }
 
+# ==========================================================
+# SSH
+# ==========================================================
+
 variable "ssh_public_key" {
   description = "OpenSSH public key installed on the VM."
   type        = string
@@ -43,8 +67,12 @@ variable "ssh_public_key" {
 variable "allowed_ssh_cidr" {
   description = "CIDR allowed to reach SSH."
   type        = string
-  default     = "203.0.113.10/32"
+  default     = "0.0.0.0/0"
 }
+
+# ==========================================================
+# TAGS
+# ==========================================================
 
 variable "tags" {
   description = "Common Azure resource tags."
