@@ -14,7 +14,7 @@ env:
   TF_VERSION: "1.15.0"
   TF_DIR: "terraform"
   ANSIBLE_DIR: "ansible"
-  VM_USER: "azureuser"
+  VM_USER: "azureadmin"
 
 jobs:
   deploy:
