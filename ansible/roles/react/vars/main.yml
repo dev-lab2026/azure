@@ -1,0 +1,8 @@
+---
+# Role defaults that can be overridden with -e or group_vars.
+app_user: "{{ ansible_user }}"
+app_root: /opt/react-app
+nginx_web_root: /var/www/react-app
+repo_url: "{{ lookup('env', 'REPO_URL') | default('', true) }}"
+repo_version: main
+node_major: "22"
