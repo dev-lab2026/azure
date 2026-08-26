@@ -4,36 +4,54 @@ on:
   push:
     branches:
       - main
+
   workflow_dispatch:
 
-# GitHub OIDC + checkout
+# ============================================================
+# GITHUB OIDC PERMISSIONS
+# ============================================================
+
 permissions:
   id-token: write
   contents: read
+
+
+# ============================================================
+# GLOBAL VARIABLES
+# ============================================================
 
 env:
   TF_VERSION: "1.15.0"
   TF_WORKING_DIR: "terraform"
   ANSIBLE_DIR: "ansible"
+  VM_USER: "azureuser"
+
+
+# ============================================================
+# DEPLOY JOB
+# ============================================================
 
 jobs:
+
   deploy:
-    name: Infrastructure & Application Deployment
+
+    name: Azure Infrastructure & InterFlow Deployment
+
     runs-on: ubuntu-latest
 
     steps:
 
-      # ============================================================
+      # ======================================================
       # 1. CHECKOUT
-      # ============================================================
+      # ======================================================
 
       - name: Checkout repository
         uses: actions/checkout@v4
 
 
-      # ============================================================
-      # 2. AZURE OIDC LOGIN
-      # ============================================================
+      # ======================================================
+      # 2. AZURE LOGIN - OIDC
+      # ======================================================
 
       - name: Azure Login
         uses: azure/login@v3
@@ -43,23 +61,28 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
 
-      # ============================================================
+      # ======================================================
       # 3. VERIFY AZURE
-      # ============================================================
+      # ======================================================
 
       - name: Verify Azure authentication
         run: |
           set -e
 
-          echo "Azure account:"
+          echo "========================================"
+          echo "Azure authentication"
+          echo "========================================"
+
           az account show \
-            --query "{name:name,id:id,tenantId:tenantId}" \
+            --query "{Subscription:name,SubscriptionId:id,TenantId:tenantId}" \
             --output table
 
+          echo "Azure authentication successful."
 
-      # ============================================================
-      # 4. TERRAFORM
-      # ============================================================
+
+      # ======================================================
+      # 4. TERRAFORM INSTALLATION
+      # ======================================================
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -67,62 +90,122 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
 
 
+      # ======================================================
+      # 5. TERRAFORM VERSION
+      # ======================================================
+
       - name: Terraform Version
         run: |
+          set -e
+
           terraform version
 
 
-      # ============================================================
-      # 5. TERRAFORM INIT
-      # ============================================================
+      # ======================================================
+      # 6. TERRAFORM INIT
+      # ======================================================
 
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
+          set -e
+
+          echo "========================================"
+          echo "Terraform Init"
+          echo "========================================"
+
           terraform init \
             -input=false
 
 
-      # ============================================================
-      # 6. TERRAFORM VALIDATE
-      # ============================================================
+      # ======================================================
+      # 7. TERRAFORM FORMAT CHECK
+      # ======================================================
+
+      - name: Terraform Format Check
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          set -e
+
+          terraform fmt \
+            -check \
+            -recursive
+
+
+      # ======================================================
+      # 8. TERRAFORM VALIDATE
+      # ======================================================
 
       - name: Terraform Validate
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
+          set -e
+
+          echo "========================================"
+          echo "Terraform Validate"
+          echo "========================================"
+
           terraform validate
 
 
-      # ============================================================
-      # 7. TERRAFORM PLAN
-      # ============================================================
+      # ======================================================
+      # 9. TERRAFORM PLAN
+      # ======================================================
 
       - name: Terraform Plan
         working-directory: ${{ env.TF_WORKING_DIR }}
         env:
           TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
         run: |
+          set -e
+
+          echo "========================================"
+          echo "Terraform Plan"
+          echo "========================================"
+
           terraform plan \
             -input=false \
             -out=tfplan
 
 
-      # ============================================================
-      # 8. TERRAFORM APPLY
-      # ============================================================
+      # ======================================================
+      # 10. TERRAFORM APPLY
+      # ======================================================
 
       - name: Terraform Apply
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
+          set -e
+
+          echo "========================================"
+          echo "Terraform Apply"
+          echo "========================================"
+
           terraform apply \
             -input=false \
             -auto-approve \
             tfplan
 
 
-      # ============================================================
-      # 9. GET AZURE VM IP
-      # ============================================================
+      # ======================================================
+      # 11. TERRAFORM OUTPUTS
+      # ======================================================
+
+      - name: Display Terraform Outputs
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "Terraform Outputs"
+          echo "========================================"
+
+          terraform output
+
+
+      # ======================================================
+      # 12. GET VM PUBLIC IP
+      # ======================================================
 
       - name: Get VM Public IP
         working-directory: ${{ env.TF_WORKING_DIR }}
@@ -139,13 +222,39 @@ jobs:
           echo "VM_PUBLIC_IP=$VM_IP" >> "$GITHUB_ENV"
 
           echo "========================================"
-          echo "Azure VM Public IP: $VM_IP"
+          echo "Azure VM Public IP"
           echo "========================================"
+          echo "$VM_IP"
 
 
-      # ============================================================
-      # 10. CONFIGURE SSH
-      # ============================================================
+      # ======================================================
+      # 13. VERIFY VM IP
+      # ======================================================
+
+      - name: Verify VM Public IP
+        run: |
+          set -e
+
+          echo "Checking VM IP..."
+
+          if [ -z "$VM_PUBLIC_IP" ]; then
+            echo "ERROR: VM_PUBLIC_IP is not defined."
+            exit 1
+          fi
+
+          if ! [[ "$VM_PUBLIC_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: Invalid IPv4 address:"
+            echo "$VM_PUBLIC_IP"
+            exit 1
+          fi
+
+          echo "Valid VM IP:"
+          echo "$VM_PUBLIC_IP"
+
+
+      # ======================================================
+      # 14. CONFIGURE SSH
+      # ======================================================
 
       - name: Configure SSH
         env:
@@ -153,7 +262,10 @@ jobs:
         run: |
           set -e
 
-          echo "Creating SSH directory..."
+          echo "========================================"
+          echo "Configure SSH"
+          echo "========================================"
+
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
 
@@ -172,118 +284,323 @@ jobs:
 
           echo "SSH private key is valid."
 
-          echo "Adding Azure VM to known_hosts..."
 
-          ssh-keyscan \
-            -H \
-            "$VM_PUBLIC_IP" \
-            >> ~/.ssh/known_hosts
+      # ======================================================
+      # 15. WAIT FOR SSH PORT
+      # ======================================================
 
-          chmod 644 ~/.ssh/known_hosts
-
-
-      # ============================================================
-      # 11. TEST SSH
-      # ============================================================
-
-      - name: Test SSH connection
+      - name: Wait for SSH
         run: |
           set -e
 
+          echo "========================================"
+          echo "Waiting for SSH"
+          echo "========================================"
+
+          echo "VM: $VM_PUBLIC_IP"
+          echo "Port: 22"
+
+          SSH_READY=false
+
+          for attempt in {1..30}; do
+
+            echo "Attempt $attempt/30..."
+
+            if timeout 5 bash -c \
+              "</dev/tcp/$VM_PUBLIC_IP/22" \
+              2>/dev/null
+            then
+
+              echo "SSH port 22 is OPEN."
+
+              SSH_READY=true
+
+              break
+
+            fi
+
+            echo "SSH not ready yet."
+
+            sleep 10
+
+          done
+
+          if [ "$SSH_READY" != "true" ]; then
+
+            echo "========================================"
+            echo "ERROR"
+            echo "========================================"
+
+            echo "SSH port 22 is not reachable:"
+            echo "$VM_PUBLIC_IP:22"
+
+            echo "Checking network connectivity..."
+
+            ping -c 3 "$VM_PUBLIC_IP" || true
+
+            exit 1
+
+          fi
+
+
+      # ======================================================
+      # 16. SSH KEYSCAN
+      # ======================================================
+
+      - name: Configure known_hosts
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "Configure known_hosts"
+          echo "========================================"
+
+          rm -f ~/.ssh/known_hosts
+
+          ssh-keyscan \
+            -4 \
+            -T 10 \
+            -p 22 \
+            "$VM_PUBLIC_IP" \
+            > ~/.ssh/known_hosts
+
+          if [ ! -s ~/.ssh/known_hosts ]; then
+            echo "ERROR: known_hosts is empty."
+            exit 1
+          fi
+
+          chmod 644 ~/.ssh/known_hosts
+
+          echo "SSH host key successfully retrieved."
+
+
+      # ======================================================
+      # 17. TEST SSH
+      # ======================================================
+
+      - name: Test SSH Connection
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "Testing SSH connection"
+          echo "========================================"
+
           ssh \
+            -4 \
             -i ~/.ssh/id_rsa \
             -o BatchMode=yes \
             -o ConnectTimeout=15 \
             -o StrictHostKeyChecking=yes \
-            azureuser@"$VM_PUBLIC_IP" \
+            "$VM_USER@$VM_PUBLIC_IP" \
             "echo 'SSH connection successful.'"
 
 
-      # ============================================================
-      # 12. INSTALL ANSIBLE
-      # ============================================================
+      # ======================================================
+      # 18. INSTALL ANSIBLE
+      # ======================================================
 
       - name: Install Ansible
         run: |
           set -e
 
-          python3 -m pip install --upgrade pip
-          python3 -m pip install ansible
+          echo "========================================"
+          echo "Install Ansible"
+          echo "========================================"
+
+          python3 -m pip install \
+            --upgrade \
+            pip
+
+          python3 -m pip install \
+            ansible
 
           ansible --version
 
 
-      # ============================================================
-      # 13. GENERATE ANSIBLE INVENTORY
-      # ============================================================
+      # ======================================================
+      # 19. GENERATE ANSIBLE INVENTORY
+      # ======================================================
 
-      - name: Generate Ansible inventory
+      - name: Generate Ansible Inventory
         run: |
           set -e
 
-          mkdir -p "${{ env.ANSIBLE_DIR }}"
+          echo "========================================"
+          echo "Generate Ansible Inventory"
+          echo "========================================"
 
-          cat > "${{ env.ANSIBLE_DIR }}/inventory.ini" <<EOF
+          mkdir -p "$ANSIBLE_DIR"
+
+          cat > "$ANSIBLE_DIR/inventory.ini" <<EOF
+
           [web]
           $VM_PUBLIC_IP
 
           [all:vars]
-          ansible_user=azureuser
+          ansible_user=$VM_USER
           ansible_ssh_private_key_file=/home/runner/.ssh/id_rsa
           ansible_python_interpreter=/usr/bin/python3
           ansible_host_key_checking=false
+
           EOF
 
-          echo "Generated inventory:"
-          cat "${{ env.ANSIBLE_DIR }}/inventory.ini"
+          echo "Inventory:"
+          cat "$ANSIBLE_DIR/inventory.ini"
 
 
-      # ============================================================
-      # 14. ANSIBLE PING
-      # ============================================================
+      # ======================================================
+      # 20. ANSIBLE PING
+      # ======================================================
 
-      - name: Test Ansible connection
+      - name: Test Ansible Connection
         run: |
           set -e
 
+          echo "========================================"
+          echo "Ansible Ping"
+          echo "========================================"
+
           ansible \
-            -i "${{ env.ANSIBLE_DIR }}/inventory.ini" \
+            -i "$ANSIBLE_DIR/inventory.ini" \
             web \
             -m ping \
             --private-key ~/.ssh/id_rsa
 
 
-      # ============================================================
-      # 15. DEPLOY APPLICATION
-      # ============================================================
+      # ======================================================
+      # 21. ANSIBLE DEPLOYMENT
+      # ======================================================
 
       - name: Deploy InterFlow with Ansible
         run: |
           set -e
 
+          echo "========================================"
+          echo "Deploy InterFlow"
+          echo "========================================"
+
           ansible-playbook \
-            -i "${{ env.ANSIBLE_DIR }}/inventory.ini" \
-            "${{ env.ANSIBLE_DIR }}/site.yml" \
+            -i "$ANSIBLE_DIR/inventory.ini" \
+            "$ANSIBLE_DIR/site.yml" \
             --private-key ~/.ssh/id_rsa
 
 
-      # ============================================================
-      # 16. VERIFY APPLICATION
-      # ============================================================
+      # ======================================================
+      # 22. VERIFY DOCKER
+      # ======================================================
 
-      - name: Verify deployment
+      - name: Verify Docker
         run: |
           set -e
 
-          echo "Checking application on Azure VM..."
+          echo "========================================"
+          echo "Verify Docker"
+          echo "========================================"
 
           ssh \
+            -4 \
             -i ~/.ssh/id_rsa \
             -o BatchMode=yes \
-            azureuser@"$VM_PUBLIC_IP" \
-            "docker ps"
+            -o StrictHostKeyChecking=yes \
+            "$VM_USER@$VM_PUBLIC_IP" \
+            "docker --version"
+
+
+      # ======================================================
+      # 23. VERIFY CONTAINERS
+      # ======================================================
+
+      - name: Verify InterFlow Containers
+        run: |
+          set -e
 
           echo "========================================"
-          echo "InterFlow deployment completed."
-          echo "VM IP: $VM_PUBLIC_IP"
+          echo "Running containers"
           echo "========================================"
+
+          ssh \
+            -4 \
+            -i ~/.ssh/id_rsa \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            "$VM_USER@$VM_PUBLIC_IP" \
+            "docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'"
+
+
+      # ======================================================
+      # 24. HEALTH CHECK
+      # ======================================================
+
+      - name: Application Health Check
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "Application Health Check"
+          echo "========================================"
+
+          for attempt in {1..12}; do
+
+            echo "Health check attempt $attempt/12..."
+
+            if curl \
+              --fail \
+              --silent \
+              --show-error \
+              --connect-timeout 10 \
+              "http://$VM_PUBLIC_IP/api/health"
+            then
+
+              echo ""
+              echo "InterFlow health check successful."
+
+              exit 0
+
+            fi
+
+            echo "Application not ready yet."
+
+            sleep 10
+
+          done
+
+          echo "ERROR: InterFlow health check failed."
+
+          exit 1
+
+
+      # ======================================================
+      # 25. DEPLOYMENT SUMMARY
+      # ======================================================
+
+      - name: Deployment Summary
+        if: success()
+        run: |
+          echo ""
+          echo "================================================"
+          echo "          DEPLOYMENT SUCCESSFUL"
+          echo "================================================"
+          echo ""
+          echo "Application:"
+          echo "http://$VM_PUBLIC_IP"
+          echo ""
+          echo "VM:"
+          echo "$VM_PUBLIC_IP"
+          echo ""
+          echo "Terraform:"
+          echo "SUCCESS"
+          echo ""
+          echo "SSH:"
+          echo "SUCCESS"
+          echo ""
+          echo "Ansible:"
+          echo "SUCCESS"
+          echo ""
+          echo "Docker:"
+          echo "SUCCESS"
+          echo ""
+          echo "InterFlow:"
+          echo "DEPLOYED"
+          echo ""
+          echo "================================================"
