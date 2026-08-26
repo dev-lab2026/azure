@@ -1,4 +1,4 @@
-name: Deploy React application to Azure VM
+name: Deploy to Azure
 
 on:
   push:
@@ -6,135 +6,163 @@ on:
       - main
   workflow_dispatch:
 
+# Permissions nécessaires pour GitHub OIDC
 permissions:
+  id-token: write
   contents: read
-
-concurrency:
-  group: production-deployment
-  cancel-in-progress: false
-
-env:
-  TF_IN_AUTOMATION: "true"
-  TF_INPUT: "false"
-  TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
-  TF_VAR_project_name: "reactcicd"
-  TF_VAR_environment: "prod"
-  TF_VAR_location: "West Europe"
-  REPO_URL: https://github.com/${{ github.repository }}.git
 
 jobs:
   deploy:
+    name: Deploy Infrastructure
     runs-on: ubuntu-latest
-    environment: production
 
     steps:
-      - name: Checkout
+      # --------------------------------------------------
+      # 1. Checkout
+      # --------------------------------------------------
+      - name: Checkout repository
         uses: actions/checkout@v4
 
+      # --------------------------------------------------
+      # 2. Azure Login - OIDC
+      # --------------------------------------------------
       - name: Azure Login
         uses: azure/login@v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      # --------------------------------------------------
+      # 3. Vérification Azure
+      # --------------------------------------------------
+      - name: Verify Azure connection
+        run: |
+          az account show
+          az account list --output table
+
+      # --------------------------------------------------
+      # 4. Installation Terraform
+      # --------------------------------------------------
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "1.15.9"
-          terraform_wrapper: false
+          terraform_version: 1.9.8
 
+      # --------------------------------------------------
+      # 5. Terraform Init
+      # --------------------------------------------------
       - name: Terraform Init
         working-directory: terraform
-        run: terraform init
+        run: |
+          terraform init
 
-      - name: Terraform Format Check
-        working-directory: terraform
-        run: terraform fmt -check -recursive
-
+      # --------------------------------------------------
+      # 6. Terraform Validate
+      # --------------------------------------------------
       - name: Terraform Validate
         working-directory: terraform
-        run: terraform validate
+        run: |
+          terraform validate
 
+      # --------------------------------------------------
+      # 7. Terraform Plan
+      # --------------------------------------------------
       - name: Terraform Plan
         working-directory: terraform
-        run: terraform plan -out=tfplan
+        env:
+          TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+        run: |
+          terraform plan \
+            -var="ssh_public_key=${TF_VAR_ssh_public_key}"
 
+      # --------------------------------------------------
+      # 8. Terraform Apply
+      # --------------------------------------------------
       - name: Terraform Apply
         working-directory: terraform
-        run: terraform apply -auto-approve tfplan
+        env:
+          TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+        run: |
+          terraform apply \
+            -auto-approve \
+            -var="ssh_public_key=${TF_VAR_ssh_public_key}"
 
-      - name: Export VM public IP
-        id: terraform-output
+      # --------------------------------------------------
+      # 9. Récupération IP publique
+      # --------------------------------------------------
+      - name: Get VM Public IP
         working-directory: terraform
         run: |
-          IP="$(terraform output -raw vm_public_ip)"
-          echo "vm_public_ip=${IP}" >> "$GITHUB_OUTPUT"
-          echo "VM public IP: ${IP}"
+          VM_IP=$(terraform output -raw vm_public_ip)
 
-      - name: Install Ansible and rsync
+          echo "VM_PUBLIC_IP=$VM_IP" >> "$GITHUB_ENV"
+
+          echo "======================================"
+          echo "VM Public IP: $VM_IP"
+          echo "======================================"
+
+      # --------------------------------------------------
+      # 10. Test SSH
+      # --------------------------------------------------
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+
+          chmod 600 ~/.ssh/id_rsa
+
+          ssh-keygen -y -f ~/.ssh/id_rsa > /dev/null
+
+          ssh-keyscan -H "$VM_PUBLIC_IP" >> ~/.ssh/known_hosts
+
+      # --------------------------------------------------
+      # 11. Vérification SSH
+      # --------------------------------------------------
+      - name: Test SSH connection
+        run: |
+          ssh \
+            -i ~/.ssh/id_rsa \
+            -o StrictHostKeyChecking=yes \
+            azureuser@"$VM_PUBLIC_IP" \
+            "echo 'SSH connection OK'"
+
+      # --------------------------------------------------
+      # 12. Installation Ansible
+      # --------------------------------------------------
+      - name: Install Ansible
         run: |
           python3 -m pip install --upgrade pip
           python3 -m pip install ansible
-          sudo apt-get update
-          sudo apt-get install -y rsync
 
-      - name: Configure SSH key
-        run: |
-          set -euo pipefail
-          install -d -m 700 "$HOME/.ssh"
-          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > "$HOME/.ssh/id_rsa"
-          chmod 600 "$HOME/.ssh/id_rsa"
-          ssh-keygen -y -f "$HOME/.ssh/id_rsa" > /dev/null
-
+      # --------------------------------------------------
+      # 13. Génération inventory Ansible
+      # --------------------------------------------------
       - name: Generate Ansible inventory
-        env:
-          VM_PUBLIC_IP: ${{ steps.terraform-output.outputs.vm_public_ip }}
         run: |
-          set -euo pipefail
-          sed \
-            -e "s|\${vm_public_ip}|${VM_PUBLIC_IP}|g" \
-            -e "s|\${admin_username}|azureadmin|g" \
-            -e "s|\${ssh_key_path}|$HOME/.ssh/id_rsa|g" \
-            ansible/inventory.tpl > ansible/inventory.ini
+          mkdir -p ansible
+
+          cat > ansible/inventory.ini <<EOF
+          [web]
+          ${VM_PUBLIC_IP}
+
+          [all:vars]
+          ansible_user=azureuser
+          ansible_ssh_private_key_file=/home/runner/.ssh/id_rsa
+          ansible_host_key_checking=false
+          EOF
+
           cat ansible/inventory.ini
 
-      - name: Wait for SSH
-        env:
-          VM_PUBLIC_IP: ${{ steps.terraform-output.outputs.vm_public_ip }}
-        run: |
-          for i in {1..30}; do
-            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i "$HOME/.ssh/id_rsa" azureadmin@"$VM_PUBLIC_IP" "echo ssh-ready" 2>/dev/null; then
-              exit 0
-            fi
-            sleep 10
-          done
-          echo "SSH did not become available in time."
-          exit 1
-
-      - name: Run Ansible
-        env:
-          REPO_URL: ${{ env.REPO_URL }}
+      # --------------------------------------------------
+      # 14. Ansible Deploy
+      # --------------------------------------------------
+      - name: Deploy application with Ansible
         run: |
           ansible-playbook \
             -i ansible/inventory.ini \
-            ansible/playbook.yml \
-            -e "repo_url=${REPO_URL}" \
-            -e "repo_version=${GITHUB_SHA}"
-
-      - name: Verify HTTP deployment
-        env:
-          VM_PUBLIC_IP: ${{ steps.terraform-output.outputs.vm_public_ip }}
-        run: |
-          set -e
-          for i in {1..12}; do
-            if curl --fail --silent --show-error --max-time 10 "http://${VM_PUBLIC_IP}/health"; then
-              echo
-              echo "Deployment successful: http://${VM_PUBLIC_IP}"
-              exit 0
-            fi
-            sleep 5
-          done
-          echo "Application health check failed."
-          exit 1
+            ansible/site.yml \
+            --private-key ~/.ssh/id_rsa
