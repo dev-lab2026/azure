@@ -21,17 +21,6 @@
     force: true
     update: true
 
-- name: Show Git remote
-  ansible.builtin.command:
-    cmd: git remote -v
-    chdir: "{{ app_dir }}"
-  register: git_remote
-  changed_when: false
-
-- name: Display Git remote
-  ansible.builtin.debug:
-    var: git_remote.stdout_lines
-
 - name: Show Git commit
   ansible.builtin.command:
     cmd: git rev-parse HEAD
@@ -43,18 +32,10 @@
   ansible.builtin.debug:
     msg: "Application repository commit: {{ git_commit.stdout }}"
 
-# ==========================================================
-# VERIFY APPLICATION
-# ==========================================================
-
 - name: Verify application directory
   ansible.builtin.stat:
     path: "{{ compose_dir }}"
   register: application_directory
-
-- name: Display application directory
-  ansible.builtin.debug:
-    msg: "Application directory: {{ compose_dir }}"
 
 - name: Verify Docker Compose file
   ansible.builtin.stat:
@@ -69,44 +50,30 @@
     fail_msg: "Docker Compose file not found: {{ compose_dir }}/{{ compose_file }}"
 
 # ==========================================================
-# CREATE .ENV
+# ENV FILE
 # ==========================================================
 
 - name: Create production .env
   ansible.builtin.copy:
+    content: "{{ lookup('env', 'ENV_FILE') | trim }}\n"
     dest: "{{ compose_dir }}/.env"
     owner: "{{ ansible_user }}"
     group: "{{ ansible_user }}"
     mode: "0600"
-    content: |
-      NODE_ENV=production
-      PORT=3000
-
-      POSTGRES_DB={{ postgres_db }}
-      POSTGRES_USER={{ postgres_user }}
-      POSTGRES_PASSWORD={{ postgres_password }}
-
-      SESSION_SECRET={{ session_secret }}
-
-      MICROSOFT_CLIENT_ID={{ microsoft_client_id }}
-      MICROSOFT_CLIENT_SECRET={{ microsoft_client_secret }}
-      MICROSOFT_TENANT_ID={{ microsoft_tenant_id }}
-      MICROSOFT_REDIRECT_URI={{ microsoft_redirect_uri }}
-
-      APP_URL={{ app_url }}
   no_log: true
 
-- name: Verify .env
+- name: Verify .env exists
   ansible.builtin.stat:
     path: "{{ compose_dir }}/.env"
   register: env_file
 
-- name: Fail if .env was not created
+- name: Fail if .env is missing
   ansible.builtin.assert:
     that:
       - env_file.stat.exists
       - env_file.stat.isreg
-    fail_msg: ".env was not created."
+      - env_file.stat.size > 0
+    fail_msg: ".env is missing or empty."
 
 # ==========================================================
 # DOCKER COMPOSE VALIDATION
@@ -131,8 +98,8 @@
   ansible.builtin.command:
     cmd: docker compose --env-file .env -f "{{ compose_file }}" down --remove-orphans
     chdir: "{{ compose_dir }}"
-  changed_when: false
   failed_when: false
+  changed_when: false
 
 # ==========================================================
 # BUILD AND START
