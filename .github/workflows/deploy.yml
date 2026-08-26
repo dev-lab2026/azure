@@ -1,4 +1,4 @@
-name: Deploy to Azure
+name: Deploy InterFlow to Azure
 
 on:
   push:
@@ -6,26 +6,35 @@ on:
       - main
   workflow_dispatch:
 
-# Permissions nécessaires pour GitHub OIDC
+# GitHub OIDC + checkout
 permissions:
   id-token: write
   contents: read
 
+env:
+  TF_VERSION: "1.15.0"
+  TF_WORKING_DIR: "terraform"
+  ANSIBLE_DIR: "ansible"
+
 jobs:
   deploy:
-    name: Deploy Infrastructure
+    name: Infrastructure & Application Deployment
     runs-on: ubuntu-latest
 
     steps:
-      # --------------------------------------------------
-      # 1. Checkout
-      # --------------------------------------------------
+
+      # ============================================================
+      # 1. CHECKOUT
+      # ============================================================
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # --------------------------------------------------
-      # 2. Azure Login - OIDC
-      # --------------------------------------------------
+
+      # ============================================================
+      # 2. AZURE OIDC LOGIN
+      # ============================================================
+
       - name: Azure Login
         uses: azure/login@v3
         with:
@@ -33,136 +42,248 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      # --------------------------------------------------
-      # 3. Vérification Azure
-      # --------------------------------------------------
-      - name: Verify Azure connection
-        run: |
-          az account show
-          az account list --output table
 
-      # --------------------------------------------------
-      # 4. Installation Terraform
-      # --------------------------------------------------
+      # ============================================================
+      # 3. VERIFY AZURE
+      # ============================================================
+
+      - name: Verify Azure authentication
+        run: |
+          set -e
+
+          echo "Azure account:"
+          az account show \
+            --query "{name:name,id:id,tenantId:tenantId}" \
+            --output table
+
+
+      # ============================================================
+      # 4. TERRAFORM
+      # ============================================================
+
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.9.8
+          terraform_version: ${{ env.TF_VERSION }}
 
-      # --------------------------------------------------
-      # 5. Terraform Init
-      # --------------------------------------------------
-      - name: Terraform Init
-        working-directory: terraform
+
+      - name: Terraform Version
         run: |
-          terraform init
+          terraform version
 
-      # --------------------------------------------------
-      # 6. Terraform Validate
-      # --------------------------------------------------
+
+      # ============================================================
+      # 5. TERRAFORM INIT
+      # ============================================================
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          terraform init \
+            -input=false
+
+
+      # ============================================================
+      # 6. TERRAFORM VALIDATE
+      # ============================================================
+
       - name: Terraform Validate
-        working-directory: terraform
+        working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
           terraform validate
 
-      # --------------------------------------------------
-      # 7. Terraform Plan
-      # --------------------------------------------------
+
+      # ============================================================
+      # 7. TERRAFORM PLAN
+      # ============================================================
+
       - name: Terraform Plan
-        working-directory: terraform
+        working-directory: ${{ env.TF_WORKING_DIR }}
         env:
           TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
         run: |
           terraform plan \
-            -var="ssh_public_key=${TF_VAR_ssh_public_key}"
+            -input=false \
+            -out=tfplan
 
-      # --------------------------------------------------
-      # 8. Terraform Apply
-      # --------------------------------------------------
+
+      # ============================================================
+      # 8. TERRAFORM APPLY
+      # ============================================================
+
       - name: Terraform Apply
-        working-directory: terraform
-        env:
-          TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+        working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
           terraform apply \
+            -input=false \
             -auto-approve \
-            -var="ssh_public_key=${TF_VAR_ssh_public_key}"
+            tfplan
 
-      # --------------------------------------------------
-      # 9. Récupération IP publique
-      # --------------------------------------------------
+
+      # ============================================================
+      # 9. GET AZURE VM IP
+      # ============================================================
+
       - name: Get VM Public IP
-        working-directory: terraform
+        working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
+          set -e
+
           VM_IP=$(terraform output -raw vm_public_ip)
+
+          if [ -z "$VM_IP" ]; then
+            echo "ERROR: VM public IP is empty."
+            exit 1
+          fi
 
           echo "VM_PUBLIC_IP=$VM_IP" >> "$GITHUB_ENV"
 
-          echo "======================================"
-          echo "VM Public IP: $VM_IP"
-          echo "======================================"
+          echo "========================================"
+          echo "Azure VM Public IP: $VM_IP"
+          echo "========================================"
 
-      # --------------------------------------------------
-      # 10. Test SSH
-      # --------------------------------------------------
+
+      # ============================================================
+      # 10. CONFIGURE SSH
+      # ============================================================
+
       - name: Configure SSH
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
+          set -e
+
+          echo "Creating SSH directory..."
           mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          echo "Installing SSH private key..."
 
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
 
           chmod 600 ~/.ssh/id_rsa
 
-          ssh-keygen -y -f ~/.ssh/id_rsa > /dev/null
+          echo "Checking SSH private key..."
 
-          ssh-keyscan -H "$VM_PUBLIC_IP" >> ~/.ssh/known_hosts
+          ssh-keygen \
+            -y \
+            -f ~/.ssh/id_rsa \
+            > /dev/null
 
-      # --------------------------------------------------
-      # 11. Vérification SSH
-      # --------------------------------------------------
+          echo "SSH private key is valid."
+
+          echo "Adding Azure VM to known_hosts..."
+
+          ssh-keyscan \
+            -H \
+            "$VM_PUBLIC_IP" \
+            >> ~/.ssh/known_hosts
+
+          chmod 644 ~/.ssh/known_hosts
+
+
+      # ============================================================
+      # 11. TEST SSH
+      # ============================================================
+
       - name: Test SSH connection
         run: |
+          set -e
+
           ssh \
             -i ~/.ssh/id_rsa \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
             -o StrictHostKeyChecking=yes \
             azureuser@"$VM_PUBLIC_IP" \
-            "echo 'SSH connection OK'"
+            "echo 'SSH connection successful.'"
 
-      # --------------------------------------------------
-      # 12. Installation Ansible
-      # --------------------------------------------------
+
+      # ============================================================
+      # 12. INSTALL ANSIBLE
+      # ============================================================
+
       - name: Install Ansible
         run: |
+          set -e
+
           python3 -m pip install --upgrade pip
           python3 -m pip install ansible
 
-      # --------------------------------------------------
-      # 13. Génération inventory Ansible
-      # --------------------------------------------------
+          ansible --version
+
+
+      # ============================================================
+      # 13. GENERATE ANSIBLE INVENTORY
+      # ============================================================
+
       - name: Generate Ansible inventory
         run: |
-          mkdir -p ansible
+          set -e
 
-          cat > ansible/inventory.ini <<EOF
+          mkdir -p "${{ env.ANSIBLE_DIR }}"
+
+          cat > "${{ env.ANSIBLE_DIR }}/inventory.ini" <<EOF
           [web]
-          ${VM_PUBLIC_IP}
+          $VM_PUBLIC_IP
 
           [all:vars]
           ansible_user=azureuser
           ansible_ssh_private_key_file=/home/runner/.ssh/id_rsa
+          ansible_python_interpreter=/usr/bin/python3
           ansible_host_key_checking=false
           EOF
 
-          cat ansible/inventory.ini
+          echo "Generated inventory:"
+          cat "${{ env.ANSIBLE_DIR }}/inventory.ini"
 
-      # --------------------------------------------------
-      # 14. Ansible Deploy
-      # --------------------------------------------------
-      - name: Deploy application with Ansible
+
+      # ============================================================
+      # 14. ANSIBLE PING
+      # ============================================================
+
+      - name: Test Ansible connection
         run: |
-          ansible-playbook \
-            -i ansible/inventory.ini \
-            ansible/site.yml \
+          set -e
+
+          ansible \
+            -i "${{ env.ANSIBLE_DIR }}/inventory.ini" \
+            web \
+            -m ping \
             --private-key ~/.ssh/id_rsa
+
+
+      # ============================================================
+      # 15. DEPLOY APPLICATION
+      # ============================================================
+
+      - name: Deploy InterFlow with Ansible
+        run: |
+          set -e
+
+          ansible-playbook \
+            -i "${{ env.ANSIBLE_DIR }}/inventory.ini" \
+            "${{ env.ANSIBLE_DIR }}/site.yml" \
+            --private-key ~/.ssh/id_rsa
+
+
+      # ============================================================
+      # 16. VERIFY APPLICATION
+      # ============================================================
+
+      - name: Verify deployment
+        run: |
+          set -e
+
+          echo "Checking application on Azure VM..."
+
+          ssh \
+            -i ~/.ssh/id_rsa \
+            -o BatchMode=yes \
+            azureuser@"$VM_PUBLIC_IP" \
+            "docker ps"
+
+          echo "========================================"
+          echo "InterFlow deployment completed."
+          echo "VM IP: $VM_PUBLIC_IP"
+          echo "========================================"
