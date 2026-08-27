@@ -1,7 +1,8 @@
 ---
 - name: Configure and deploy Clarity
-  hosts: all
+  hosts: web
   become: true
 
   roles:
     - docker
+    - web
