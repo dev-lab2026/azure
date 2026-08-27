@@ -92,6 +92,23 @@ class ProjectStore {
         details JSONB, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS idx_app_audit_logs_created_at ON app_audit_logs(created_at DESC);
+      CREATE TABLE IF NOT EXISTS system_settings (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        entra_client_id TEXT,
+        entra_tenant_id TEXT,
+        entra_client_secret_enc TEXT,
+        entra_client_secret_iv TEXT,
+        entra_client_secret_tag TEXT,
+        entra_domain TEXT,
+        entra_sync_interval_hours INTEGER NOT NULL DEFAULT 4,
+        entra_auto_provision BOOLEAN NOT NULL DEFAULT TRUE,
+        entra_default_role VARCHAR(32) NOT NULL DEFAULT 'CHEF_PROJET',
+        local_admin_email VARCHAR(255),
+        local_admin_name VARCHAR(255),
+        local_admin_password_hash TEXT,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      INSERT INTO system_settings(id) VALUES(1) ON CONFLICT(id) DO NOTHING;
     `);
     const projects = await pool.query<{ id: string; document: Project }>('SELECT id, document FROM project_documents ORDER BY id');
     if (projects.rows.length === 0) {
@@ -137,6 +154,28 @@ class ProjectStore {
       createdAt: new Date(row.created_at).toISOString(),
       updatedAt: new Date(row.updated_at).toISOString(),
     };
+  }
+
+  async getSystemSettings(): Promise<any> {
+    const pool = getPgPool(); if (!pool) return null;
+    const r = await pool.query('SELECT * FROM system_settings WHERE id=1');
+    return r.rows[0] || null;
+  }
+
+  async saveSystemSettings(input: any): Promise<any> {
+    const pool = getPgPool(); if (!pool) throw new Error('PostgreSQL requis.');
+    const current = await this.getSystemSettings() || {};
+    const keys = ['entra_client_id','entra_tenant_id','entra_client_secret_enc','entra_client_secret_iv','entra_client_secret_tag','entra_domain','entra_sync_interval_hours','entra_auto_provision','entra_default_role','local_admin_email','local_admin_name','local_admin_password_hash'];
+    const values: any = {};
+    for (const k of keys) values[k] = input[k] !== undefined ? input[k] : current[k] ?? null;
+    const r = await pool.query(`UPDATE system_settings SET
+      entra_client_id=$1, entra_tenant_id=$2, entra_client_secret_enc=$3, entra_client_secret_iv=$4, entra_client_secret_tag=$5,
+      entra_domain=$6, entra_sync_interval_hours=$7, entra_auto_provision=$8, entra_default_role=$9,
+      local_admin_email=$10, local_admin_name=$11, local_admin_password_hash=$12, updated_at=NOW() WHERE id=1 RETURNING *`,
+      [values.entra_client_id,values.entra_tenant_id,values.entra_client_secret_enc,values.entra_client_secret_iv,values.entra_client_secret_tag,
+       values.entra_domain,Math.max(1,Number(values.entra_sync_interval_hours||4)),Boolean(values.entra_auto_provision),values.entra_default_role||'CHEF_PROJET',
+       values.local_admin_email,values.local_admin_name,values.local_admin_password_hash]);
+    return r.rows[0];
   }
 
   async listUsers(): Promise<UserProfile[]> {
@@ -201,8 +240,11 @@ class ProjectStore {
   async upsertEntraUser(input: { azureOid: string; email: string; displayName: string; jobTitle?: string; department?: string; officeLocation?: string; avatarUrl?: string }): Promise<UserProfile | null> {
     const existing = await this.getUserByAzureOid(input.azureOid) || await this.getUserByEmail(input.email);
     if (!existing) {
-      if (process.env.AUTO_PROVISION_USERS !== 'true') return null;
-      return this.createUser({ ...input, role: (process.env.DEFAULT_USER_ROLE as UserRole) || 'CHEF_PROJET', isActive: true });
+      const settings=await this.getSystemSettings();
+      const autoProvision=settings ? settings.entra_auto_provision !== false : process.env.AUTO_PROVISION_USERS === 'true';
+      if (!autoProvision) return null;
+      const configuredRole=String(settings?.entra_default_role||process.env.DEFAULT_USER_ROLE||'CHEF_PROJET') as UserRole;
+      return this.createUser({ ...input, role: ['CHEF_PROJET','PMO','CONTRIBUTEUR'].includes(configuredRole) ? configuredRole : 'CHEF_PROJET', isActive: true });
     }
     return this.updateUser(existing.id, { displayName: input.displayName, jobTitle: input.jobTitle, department: input.department, officeLocation: input.officeLocation, avatarUrl: input.avatarUrl, azureOid: input.azureOid });
   }

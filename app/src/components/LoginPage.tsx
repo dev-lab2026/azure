@@ -14,6 +14,9 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
   const [demoMode, setDemoMode] = useState(false);
   const [localAuthEnabled, setLocalAuthEnabled] = useState(false);
   const [adminEmailHint, setAdminEmailHint] = useState('admin@local');
+  const [needsSetup, setNeedsSetup] = useState(false);
+  const [setupName, setSetupName] = useState('Administrateur système');
+  const [setupPassword, setSetupPassword] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
 
@@ -33,6 +36,10 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
   }, []);
 
   useEffect(() => {
+    fetch('/api/setup/status').then(r=>r.json()).then(d=>setNeedsSetup(!d.configured)).catch(()=>{});
+  }, []);
+
+  useEffect(() => {
     const handler = (event: MessageEvent) => {
       if (event.origin !== window.location.origin) return;
       if (event.data?.type === 'OAUTH_AUTH_SUCCESS' && event.data.user) {
@@ -47,6 +54,18 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
     window.addEventListener('message', handler);
     return () => window.removeEventListener('message', handler);
   }, [onLoginSuccess]);
+
+  const setupAdmin = async (event: React.FormEvent) => {
+    event.preventDefault(); setLoading(true); setErrorMsg(null);
+    try {
+      const res=await fetch('/api/setup/admin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,displayName:setupName,password:setupPassword})});
+      const data=await res.json(); if(!res.ok) throw new Error(data.error||'Initialisation impossible.');
+      setNeedsSetup(false); setAdminEmailHint(email); setPassword(setupPassword); setSetupPassword('');
+      const loginRes=await fetch('/api/auth/login-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password:setupPassword})});
+      const loginData=await loginRes.json(); if(!loginRes.ok) throw new Error(loginData.error||'Connexion impossible.');
+      onLoginSuccess(loginData.user);
+    } catch(e:any){setErrorMsg(e.message||'Initialisation impossible.');} finally{setLoading(false);}
+  };
 
   const loginLocal = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -128,7 +147,18 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
           </div>
         )}
 
-        {localAuthEnabled && (
+        {needsSetup && (
+          <form onSubmit={setupAdmin} className="space-y-3 p-4 rounded-xl bg-indigo-50 border border-indigo-200">
+            <div className="text-sm font-black text-indigo-900">Première configuration</div>
+            <p className="text-xs text-indigo-800">Créez le premier administrateur directement depuis le web. Aucun fichier .env n'est nécessaire.</p>
+            <input type="text" value={setupName} onChange={e=>setSetupName(e.target.value)} placeholder="Nom de l'administrateur" className="w-full px-3 py-2.5 border border-indigo-200 rounded-lg text-sm" required />
+            <input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="admin@entreprise.com" className="w-full px-3 py-2.5 border border-indigo-200 rounded-lg text-sm" required />
+            <input type="password" value={setupPassword} onChange={e=>setSetupPassword(e.target.value)} placeholder="Mot de passe (10 caractères minimum)" minLength={10} className="w-full px-3 py-2.5 border border-indigo-200 rounded-lg text-sm" required />
+            <button type="submit" disabled={loading} className="w-full py-3 bg-indigo-600 text-white rounded-lg text-sm font-bold disabled:opacity-50">{loading?'Initialisation…':'Créer l’administrateur'}</button>
+          </form>
+        )}
+
+        {!needsSetup && localAuthEnabled && (
           <form onSubmit={loginLocal} className="space-y-3">
             <div className="flex items-center gap-2 text-sm font-bold text-slate-800">
               <KeyRound className="w-4 h-4 text-indigo-600" />
@@ -160,7 +190,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
               {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <span>Se connecter comme administrateur</span>}
             </button>
             <p className="text-[11px] text-slate-500">
-              Ce compte local sert à initialiser CLARITY PM. Entra ID reste disponible en parallèle.
+              Ce compte local sert à administrer CLARITY PM. Les secrets sont stockés côté serveur.
             </p>
           </form>
         )}

@@ -8,31 +8,25 @@ services:
     container_name: clarity-app
     restart: unless-stopped
 
-    env_file:
-      - .env
-
     environment:
       NODE_ENV: production
       PORT: 3000
 
-      DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}"
-
+      DATABASE_URL: "postgresql://clarity_admin:clarity_change_me@postgres:5432/clarity_pm_enterprise"
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
+      POSTGRES_DB: clarity_pm_enterprise
+      POSTGRES_USER: clarity_admin
+      POSTGRES_PASSWORD: clarity_change_me
       POSTGRES_SSL: disable
-
-      MICROSOFT_CLIENT_ID: "${MICROSOFT_CLIENT_ID:-}"
-      MICROSOFT_CLIENT_SECRET: "${MICROSOFT_CLIENT_SECRET:-}"
-      MICROSOFT_TENANT_ID: "${MICROSOFT_TENANT_ID:-}"
-      MICROSOFT_REDIRECT_URI: "${MICROSOFT_REDIRECT_URI:-}"
-
-      ENTRA_CLIENT_ID: "${MICROSOFT_CLIENT_ID:-}"
-      ENTRA_TENANT_ID: "${MICROSOFT_TENANT_ID:-}"
-
-      APP_URL: "${APP_URL:-http://localhost}"
+      APP_URL: "http://localhost"
+      CLARITY_SECRET_FILE: /data/clarity.secret
 
     ports:
       - "80:3000"
+
+    volumes:
+      - clarity_runtime:/data
 
     depends_on:
       postgres:
@@ -57,13 +51,10 @@ services:
     container_name: clarity-postgres
     restart: unless-stopped
 
-    env_file:
-      - .env
-
     environment:
-      POSTGRES_DB: "${POSTGRES_DB}"
-      POSTGRES_USER: "${POSTGRES_USER}"
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      POSTGRES_DB: clarity_pm_enterprise
+      POSTGRES_USER: clarity_admin
+      POSTGRES_PASSWORD: clarity_change_me
 
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -84,6 +75,8 @@ services:
 volumes:
   postgres_data:
     name: clarity-postgres-data
+  clarity_runtime:
+    name: clarity-runtime
 
 networks:
   clarity_network:
