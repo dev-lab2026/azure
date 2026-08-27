@@ -12,12 +12,12 @@ services:
       NODE_ENV: production
       PORT: 3000
 
-      DATABASE_URL: "postgresql://clarity_admin:clarity_change_me@postgres:5432/clarity_pm_enterprise"
+      DATABASE_URL: "postgresql://clarity_admin:${POSTGRES_PASSWORD}@postgres:5432/clarity_pm_enterprise"
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       POSTGRES_DB: clarity_pm_enterprise
       POSTGRES_USER: clarity_admin
-      POSTGRES_PASSWORD: clarity_change_me
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be supplied by deployment}
       POSTGRES_SSL: disable
       APP_URL: "http://localhost"
       CLARITY_SECRET_FILE: /data/clarity.secret
@@ -54,7 +54,7 @@ services:
     environment:
       POSTGRES_DB: clarity_pm_enterprise
       POSTGRES_USER: clarity_admin
-      POSTGRES_PASSWORD: clarity_change_me
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be supplied by deployment}
 
     volumes:
       - postgres_data:/var/lib/postgresql/data
