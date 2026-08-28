@@ -17,7 +17,8 @@ import {
   AlertTriangle,
   Flame,
   ShieldCheck,
-  User as UserIcon
+  User as UserIcon,
+  BarChart3
 } from 'lucide-react';
 import { Project, ProjectMetrics, MicrosoftUser, UserRole } from '../types';
 import { formatCurrency } from '../utils/pmCalculations';
@@ -117,6 +118,7 @@ export const Navbar: React.FC<NavbarProps> = ({
       case 'DIRECTEUR_PROJETS':
         return [
           { id: 'portfolio', label: 'Portefeuille Multi-Projets', icon: Layers },
+          { id: 'analytics', label: 'PM Studio Analytics', icon: BarChart3 },
           { id: 'dashboard', label: 'Tableau de Bord Stratégique & KPIs', icon: LayoutDashboard },
           { id: 'risks', label: 'Matrice des Risques Portefeuille', icon: ShieldAlert, badge: criticalRisks > 0 ? criticalRisks : undefined },
           { id: 'workload', label: 'Charge & Capacité des Équipes', icon: Users },
@@ -124,6 +126,7 @@ export const Navbar: React.FC<NavbarProps> = ({
       case 'PMO':
         return [
           { id: 'portfolio', label: 'Portefeuille & Gouvernance', icon: Layers },
+          { id: 'analytics', label: 'PM Studio Analytics', icon: BarChart3 },
           { id: 'dashboard', label: 'Audit EVM & Courbes en S', icon: LayoutDashboard },
           { id: 'gantt', label: 'Jalons Stratégiques & Délais', icon: Calendar },
           { id: 'tasks', label: 'Audit WBS & Livrables', icon: ListTodo },
@@ -137,6 +140,7 @@ export const Navbar: React.FC<NavbarProps> = ({
       default:
         return [
           { id: 'dashboard', label: 'Tableau de bord & KPIs', icon: LayoutDashboard },
+          { id: 'analytics', label: 'PM Studio Analytics', icon: BarChart3 },
           { id: 'kanban', label: 'Tableau Kanban', icon: FolderKanban },
           { id: 'gantt', label: 'Chronogramme Gantt', icon: Calendar },
           { id: 'tasks', label: 'Grille WBS & Tâches', icon: ListTodo },

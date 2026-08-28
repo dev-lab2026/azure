@@ -24,6 +24,7 @@ import { TeamWorkload } from './components/TeamWorkload';
 import { PortfolioOverview } from './components/PortfolioOverview';
 import { AdminPage } from './components/AdminPage';
 import { ContributorPortal } from './components/ContributorPortal';
+import { PMStudioAnalytics } from './components/PMStudioAnalytics';
 
 // Modals
 import { AIAssistantModal } from './components/AIAssistantModal';
@@ -106,7 +107,7 @@ export const App: React.FC = () => {
   });
 
   const [activeTab, setActiveTab] = useState<
-    'DASHBOARD' | 'KANBAN' | 'GANTT' | 'TASKS' | 'RISKS' | 'TEAM' | 'PORTFOLIO' | 'ADMIN' | 'MY_TASKS'
+    'DASHBOARD' | 'KANBAN' | 'GANTT' | 'TASKS' | 'RISKS' | 'TEAM' | 'PORTFOLIO' | 'ANALYTICS' | 'ADMIN' | 'MY_TASKS'
   >('DASHBOARD');
 
   const isAdmin = currentUser?.role === 'ADMINISTRATEUR';
@@ -382,7 +383,7 @@ export const App: React.FC = () => {
       setActiveTab('TEAM');
     } else if (upper === 'ADMIN') {
       setActiveTab('ADMIN');
-    } else if (['DASHBOARD', 'KANBAN', 'GANTT', 'TASKS', 'RISKS', 'TEAM', 'PORTFOLIO', 'ADMIN', 'MY_TASKS'].includes(upper)) {
+    } else if (['DASHBOARD', 'KANBAN', 'GANTT', 'TASKS', 'RISKS', 'TEAM', 'PORTFOLIO', 'ANALYTICS', 'ADMIN', 'MY_TASKS'].includes(upper)) {
       setActiveTab(upper as any);
     }
   };
@@ -428,6 +429,16 @@ export const App: React.FC = () => {
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 space-y-6">
         
         {/* Render Tab Views */}
+        {activeTab === 'ANALYTICS' && (
+          <PMStudioAnalytics
+            projects={projects}
+            onSelectProject={(id) => {
+              setActiveProjectId(id);
+              setActiveTab('DASHBOARD');
+            }}
+          />
+        )}
+
         {activeTab === 'PORTFOLIO' && (
           <PortfolioOverview
             projects={projects}
