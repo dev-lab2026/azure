@@ -11,6 +11,7 @@ import { UserRole, MicrosoftUser, UserProfile, Project } from './src/types';
 import { ensureAIConfigTable, getAIConfig, getAISecret, publicAIConfig, saveAIConfig } from './src/server_ai_config';
 import { ensureAIGatewayTable, callGatewayText } from './src/ai_gateway';
 import { ensureAIRouterTable, listAIRouterAccounts, saveAIRouterAccount, deleteAIRouterAccount, getGeminiModelCatalog } from './src/ai_router';
+import { localPmAnswer } from './src/local_pm_engine';
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -2323,6 +2324,34 @@ app.post('/api/copilot/actions', requireClarityApiKey, async (req: Request, res:
 });
 
 // API: mémoire du Copilot pour un projet
+app.post('/api/projects/:id/assistant-local', upload.array('files', 10), requireRole(RBAC.canManageProject), requireProjectAccess, async (req: Request, res: Response) => {
+  const project = dbStore.getProjectById(String(req.params.id));
+  if (!project) return res.status(404).json({ error: 'Projet introuvable.' });
+  try {
+    const message = String(req.body?.message || '').trim();
+    const files = Array.isArray(req.files) ? req.files as Express.Multer.File[] : [];
+    const result = localPmAnswer(project, message);
+    if (files.length) {
+      const workbookSummaries:any[] = [];
+      for (const file of files) {
+        const ext = path.extname(file.originalname || '').toLowerCase();
+        if (['.xlsx','.xls','.csv'].includes(ext)) {
+          const sheets = analyzeExcelWorkbook(file.buffer);
+          workbookSummaries.push({ file: file.originalname, sheets: sheets.map((s:any) => ({ sheet:s.sheet, type:s.type, rows:s.rows.length, confidence:s.confidence })) });
+        } else {
+          workbookSummaries.push({ file: file.originalname, type: file.mimetype || 'unknown' });
+        }
+      }
+      result.analysis.elements.documents = workbookSummaries;
+      result.reply += ` ${files.length} fichier(s) joint(s) ont été inspectés localement.`;
+    }
+    res.json({ success:true, data:result });
+  } catch (e:any) {
+    console.error('Local PM assistant failed:', e);
+    res.status(400).json({ error:e?.message || 'Assistant PM local indisponible.' });
+  }
+});
+
 app.get('/api/projects/:id/copilot', requireRole(RBAC.canManageProject), requireProjectAccess, async (req: Request, res: Response) => {
   try {
     const project=dbStore.getProjectById(String(req.params.id));

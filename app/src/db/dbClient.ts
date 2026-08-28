@@ -14,7 +14,7 @@ export function getPgPool(): pg.Pool | null {
   poolInstance = new Pool(connectionString ? {
     connectionString,
     ssl: process.env.POSTGRES_SSL === 'disable' ? false : { rejectUnauthorized: false },
-    max: Number(process.env.POSTGRES_POOL_MAX || 20),
+    max: Number(process.env.POSTGRES_POOL_MAX || 5),
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 5000,
   } : {
@@ -24,7 +24,7 @@ export function getPgPool(): pg.Pool | null {
     user: process.env.POSTGRES_USER || 'postgres',
     password: process.env.POSTGRES_PASSWORD || '',
     ssl: process.env.POSTGRES_SSL === 'disable' ? false : { rejectUnauthorized: false },
-    max: Number(process.env.POSTGRES_POOL_MAX || 20),
+    max: Number(process.env.POSTGRES_POOL_MAX || 5),
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 5000,
   });
