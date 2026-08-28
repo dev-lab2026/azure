@@ -1205,7 +1205,11 @@ function normalizeDate(value: unknown): string {
 }
 function parseAmount(value: unknown): number {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
-  const raw = String(value ?? '').replace(/\s/g, '').replace(/€/g, '').replace(/,/g, '.');
+  let raw = String(value ?? '').trim().replace(/\s/g, '').replace(/[€$£]/g, '');
+  if (!raw) return 0;
+  // Handle both 1234.56 and French 1.234,56 / 1 234,56 formats.
+  if (raw.includes(',') && raw.includes('.')) raw = raw.lastIndexOf(',') > raw.lastIndexOf('.') ? raw.replace(/\./g, '').replace(',', '.') : raw.replace(/,/g, '');
+  else if (raw.includes(',')) raw = raw.replace(',', '.');
   const n = Number(raw.replace(/[^0-9.-]/g, ''));
   return Number.isFinite(n) ? n : 0;
 }
@@ -1334,7 +1338,11 @@ function normalizeImportedProject(raw: any, rowNumber: number, managerLookup: Us
     members: [], tasks: [], milestones: [], risks: [], kpiWidgets: [],
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
   };
-  if (project.code) usedCodes.add(project.code.toLowerCase());
+  if (!project.code) {
+    project.code = generateImportCode(project.name || 'PROJET', rowNumber, usedCodes);
+  } else {
+    usedCodes.add(project.code.toLowerCase());
+  }
   const validation = validateImportProject(project);
   return { rowNumber, valid: validation.valid, errors: validation.errors, warnings: validation.warnings, duplicate: false, confidence: Number(raw?.confidence) || 0, evidence: String(raw?.evidence || ''), project };
 }
@@ -1825,8 +1833,7 @@ function excelParseDate(value: unknown): string | undefined {
 
 function excelNumber(value: unknown): number {
   if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
-  const n = Number(String(value ?? '').replace(/\s/g,'').replace(',', '.').replace(/[€$£]/g,''));
-  return Number.isFinite(n) ? n : 0;
+  return parseAmount(value);
 }
 
 function excelBool(value: unknown): boolean {
@@ -1916,7 +1923,7 @@ function analyzeExcelWorkbook(buffer: Buffer) {
   return sheets;
 }
 
-function normalizeJsonImport(type: 'projects'|'tasks'|'milestones', items: any[], user: MicrosoftSessionUser) {
+function normalizeJsonImport(type: 'projects'|'tasks'|'milestones', items: any[], user: MicrosoftSessionUser, stagedProjects?: Map<string, any>) {
   const errors: string[] = [];
   const normalized: any[] = [];
   const seen = new Set<string>();
@@ -1925,6 +1932,7 @@ function normalizeJsonImport(type: 'projects'|'tasks'|'milestones', items: any[]
     const raw = items[i] || {};
     const n = i + 1;
     if (type === 'projects') {
+      if (!RBAC.canCreateOrDeleteProject(user.role)) { errors.push(`Ligne ${n}: droits insuffisants pour importer un projet.`); continue; }
       const code = String(raw.code || raw.projectCode || '').trim();
       const name = String(raw.name || raw.title || '').trim();
       if (!code || !name) { errors.push(`Ligne ${n}: code et name sont obligatoires.`); continue; }
@@ -1948,7 +1956,10 @@ function normalizeJsonImport(type: 'projects'|'tasks'|'milestones', items: any[]
     } else {
       const projectId = String(raw.projectId || '').trim();
       const projectCode = String(raw.projectCode || raw.codeProjet || '').trim();
-      const project = projectId ? dbStore.getProjectById(projectId) : dbStore.getAllProjects().find(p => p.code.toLowerCase() === projectCode.toLowerCase());
+      const project = projectId
+        ? (dbStore.getProjectById(projectId) || stagedProjects?.get(projectId))
+        : (dbStore.getAllProjects().find(p => p.code.toLowerCase() === projectCode.toLowerCase()) ||
+           (projectCode ? stagedProjects?.get(projectCode.toLowerCase()) : undefined));
       if (!project) { errors.push(`Ligne ${n}: projet introuvable${projectCode ? ` (${projectCode})` : ''}.`); continue; }
       if (!canViewProject(project, user)) { errors.push(`Ligne ${n}: accès refusé au projet ${project.code}.`); continue; }
       if (type === 'tasks') {
@@ -1983,28 +1994,103 @@ app.post('/api/import-excel/preview', requireOrigin, requireAuth, upload.single(
     for (const sh of sheets) {
       if (sh.type !== 'unknown') all.push(...sh.rows.map((r:any,i:number)=>({ ...r, _sheet:sh.sheet, _row:i+2 })));
     }
-    if (!all.length) return res.status(400).json({ error: 'Aucune donnée métier reconnue dans le fichier.' });
-    // Normalize through the same server-side business rules used by JSON import.
-    const grouped:any = { projects:[], tasks:[], milestones:[] };
-    all.forEach(r => { const clean={...r}; delete clean._sheet; delete clean._row; if (sheets.find(x=>x.sheet===r._sheet)?.type==='projects') grouped.projects.push(clean); else if (sheets.find(x=>x.sheet===r._sheet)?.type==='tasks') grouped.tasks.push(clean); else grouped.milestones.push(clean); });
+
+    // V1 Intelligence: keep the deterministic parser as the safe baseline, then
+    // use semantic extraction only where the workbook is too irregular for headers.
+    // Nothing is written to PostgreSQL during preview.
+    const localIntake = buildDeterministicProjectIntake([req.file]);
     const results:any = {};
-    // First normalize projects so tasks/jalons from the same workbook can immediately
-    // reference a newly imported project by its Project Code.
+    const grouped:any = { projects:[], tasks:[], milestones:[] };
+    all.forEach(r => {
+      const clean={...r}; delete clean._sheet; delete clean._row;
+      const kind=sheets.find(x=>x.sheet===r._sheet)?.type;
+      if(kind==='projects') grouped.projects.push(clean);
+      else if(kind==='tasks') grouped.tasks.push(clean);
+      else if(kind==='milestones') grouped.milestones.push(clean);
+    });
+    // Preserve the existing structured import path whenever possible.
     if (grouped.projects.length) results.projects = normalizeJsonImport('projects', grouped.projects, user);
+
     const stagedProjects = new Map<string, any>();
-    (results.projects?.items || []).forEach((p:any) => stagedProjects.set(String(p.code).toLowerCase(), p));
+    (results.projects?.items || []).forEach((p:any) => {
+      if (p?.id) stagedProjects.set(String(p.id), p);
+      if (p?.code) stagedProjects.set(String(p.code).toLowerCase(), p);
+    });
+
+    // Tasks and milestones may reference a project created in this same preview.
+    // Validate them only after the staged project map exists.
+    if (grouped.tasks.length) results.tasks = normalizeJsonImport('tasks', grouped.tasks, user, stagedProjects);
+    if (grouped.milestones.length) results.milestones = normalizeJsonImport('milestones', grouped.milestones, user, stagedProjects);
+
+    // If the workbook has no reliably typed project sheet, recover projects from
+    // labels/blocks locally first. This is intentionally conservative.
+    if (user.role === 'DIRECTEUR_PROJETS' && !results.projects?.items?.length && localIntake.projectPatch?.name) {
+      const recovered = normalizeImportedProject({ ...localIntake.projectPatch, confidence:0.86, evidence:localIntake.evidence.slice(0,3).join(' | ') }, 1, await dbStore.listUsers(), new Set());
+      if (recovered.valid) {
+        results.projects = { items:[recovered.project], errors:[], validCount:1, errorCount:0, duplicateCount:0, warnings:recovered.warnings };
+        stagedProjects.set(String(recovered.project.id), recovered.project);
+        if (recovered.project.code) stagedProjects.set(String(recovered.project.code).toLowerCase(), recovered.project);
+      }
+    }
+
+    // Recover document-defined actions/checklists/risks as proposals when normal
+    // column detection did not identify a typed sheet. They still go through the
+    // normal import validation before confirmation.
+    if (!results.tasks?.items?.length && localIntake.tasks.length) {
+      const projectForTasks = results.projects?.items?.[0];
+      const prepared = localIntake.tasks.map((t:any) => ({...t, projectId:t.projectId || projectForTasks?.id, projectCode:t.projectCode || projectForTasks?.code}));
+      if (prepared.some((x:any)=>x.projectId || x.projectCode)) results.tasks = normalizeJsonImport('tasks', prepared, user, stagedProjects);
+    }
+    if (!results.milestones?.items?.length && localIntake.milestones.length) {
+      const projectForMilestones = results.projects?.items?.[0];
+      const prepared = localIntake.milestones.map((m:any) => ({...m, projectId:m.projectId || projectForMilestones?.id, projectCode:m.projectCode || projectForMilestones?.code}));
+      if (prepared.some((x:any)=>x.projectId || x.projectCode)) results.milestones = normalizeJsonImport('milestones', prepared, user, stagedProjects);
+    }
+
+    // Optional semantic pass: use the configured AI gateway only for unstructured
+    // project extraction. The application remains fully functional without it.
+    let semanticProjects:any[]=[];
+    try {
+      if (user.role === 'DIRECTEUR_PROJETS' && !results.projects?.items?.length) {
+        const evidence=buildSheetEvidence(XLSX.read(req.file.buffer,{type:'buffer',cellDates:true})).text;
+        semanticProjects=await extractProjectsWithAI(evidence);
+        if (semanticProjects.length) {
+          const used=new Set<string>(dbStore.getAllProjects().map(p=>p.code.toLowerCase()));
+          const managerLookup=await dbStore.listUsers();
+          const normalized=semanticProjects.map((x:any,i:number)=>normalizeImportedProject(x,i+1,managerLookup,used)).filter((x:any)=>x.valid && !x.duplicate);
+          if(normalized.length) results.projects={items:normalized.map((x:any)=>x.project),errors:[],validCount:normalized.length,errorCount:0,duplicateCount:0,warnings:normalized.flatMap((x:any)=>x.warnings)};
+        }
+      }
+    } catch (semanticError) {
+      console.warn('Semantic Excel extraction skipped:', semanticError instanceof Error ? semanticError.message : String(semanticError));
+    }
+
+    if (!all.length && !localIntake.projectPatch?.name && !localIntake.tasks.length && !localIntake.milestones.length) {
+      return res.status(400).json({ error: 'Aucune donnée métier reconnue dans le fichier.' });
+    }
+    // Resolve project references after both deterministic and semantic recovery.
+    // Add all recovered/structured project references by code before final validation.
+    (results.projects?.items || []).forEach((p:any) => {
+      if (p?.id) stagedProjects.set(String(p.id), p);
+      if (p?.code) stagedProjects.set(String(p.code).toLowerCase(), p);
+    });
     for (const type of ['tasks','milestones'] as const) {
-      if (!grouped[type].length) continue;
-      const prepared = grouped[type].map((item:any) => {
+      const current = results[type];
+      if (!current?.items?.length) continue;
+      const repaired = current.items.map((item:any) => {
         if (!item.projectId && item.projectCode) {
           const staged = stagedProjects.get(String(item.projectCode).toLowerCase());
           if (staged) return { ...item, projectId: staged.id };
         }
         return item;
       });
-      results[type] = normalizeJsonImport(type, prepared, user);
+      results[type] = normalizeJsonImport(type, repaired, user, stagedProjects);
     }
-    res.json({ success:true, data:{ file:req.file.originalname, sheets, results, totals:{ projects:results.projects?.validCount||0, tasks:results.tasks?.validCount||0, milestones:results.milestones?.validCount||0 } }});
+    res.json({ success:true, data:{
+      file:req.file.originalname, sheets, results,
+      intelligence:{version:'1.0',localExtraction:localIntake,semanticProjects:semanticProjects.length,mode:semanticProjects.length?'hybrid-ai+local':'local-rules'},
+      totals:{ projects:results.projects?.validCount||0, tasks:results.tasks?.validCount||0, milestones:results.milestones?.validCount||0 }
+    }});
   } catch (e:any) {
     console.error('Excel preview failed:', e);
     res.status(400).json({ error:e?.message || 'Impossible de lire le fichier Excel.' });
