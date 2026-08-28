@@ -1,6 +1,4 @@
 import crypto from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
 import { getPgPool } from './db/dbClient';
 
 export type AIProvider = 'GEMINI' | 'OPENAI_COMPATIBLE' | 'ANTHROPIC';
@@ -30,9 +28,7 @@ type StoredRow = {
 };
 
 const secretKey = () => {
-  const secretPath = process.env.CLARITY_SECRET_FILE || path.join(process.cwd(), 'data', 'clarity.secret');
-  let persisted = ''; try { persisted = fs.existsSync(secretPath) ? fs.readFileSync(secretPath,'utf8').trim() : ''; } catch {}
-  const raw = process.env.AI_CONFIG_SECRET || process.env.JWT_SECRET || persisted;
+  const raw = process.env.AI_CONFIG_SECRET || process.env.JWT_SECRET || '';
   if (!raw) throw new Error('AI_CONFIG_SECRET ou JWT_SECRET doit être configuré pour stocker la clé IA.');
   return crypto.createHash('sha256').update(raw).digest();
 };

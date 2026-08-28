@@ -47,18 +47,7 @@ const roleForEmail = (email: string): UserRole => {
   return 'CHEF_PROJET';
 };
 
-function runtimeSecret(): string {
-  if (process.env.JWT_SECRET) return process.env.JWT_SECRET;
-  const secretPath = process.env.CLARITY_SECRET_FILE || path.join(process.cwd(), 'data', 'clarity.secret');
-  try {
-    if (fs.existsSync(secretPath)) return fs.readFileSync(secretPath, 'utf8').trim();
-    fs.mkdirSync(path.dirname(secretPath), { recursive: true });
-    const value = crypto.randomBytes(48).toString('base64url');
-    fs.writeFileSync(secretPath, value, { mode: 0o600 });
-    return value;
-  } catch { return ''; }
-}
-const secret = () => runtimeSecret();
+const secret = () => process.env.JWT_SECRET || (process.env.NODE_ENV === 'production' ? '' : 'development-only-change-me');
 function signSession(user: MicrosoftSessionUser) {
   const key = secret(); if (!key) throw new Error('JWT_SECRET doit être configuré en production.');
   const payload = Buffer.from(JSON.stringify({ user, exp: Math.floor(Date.now()/1000)+SESSION_TTL_SECONDS })).toString('base64url');
@@ -787,31 +776,14 @@ app.get('/api/health', (req: Request, res: Response) => {
 });
 
 // --- MICROSOFT OAUTH & AUTHENTICATION SERVICES ---
-async function getEntraConfig() {
-  const row = await dbStore.getSystemSettings();
-  return {
-    clientId: String(row?.entra_client_id || process.env.MICROSOFT_CLIENT_ID || '').trim(),
-    tenantId: String(row?.entra_tenant_id || process.env.MICROSOFT_TENANT_ID || 'common').trim(),
-    clientSecret: String(process.env.MICROSOFT_CLIENT_SECRET || '').trim(),
-    domain: String(row?.entra_domain || '').trim(),
-    syncIntervalHours: Number(row?.entra_sync_interval_hours || 4),
-    autoProvisionUsers: row?.entra_auto_provision !== false,
-    defaultRole: row?.entra_default_role || 'CHEF_PROJET',
-  };
-}
-function configCipherKey(){ return crypto.createHash('sha256').update(runtimeSecret() || 'clarity-fallback').digest(); }
-function encryptConfigSecret(value:string){ const iv=crypto.randomBytes(12); const c=crypto.createCipheriv('aes-256-gcm',configCipherKey(),iv); const enc=Buffer.concat([c.update(value,'utf8'),c.final()]); return {enc:enc.toString('base64'),iv:iv.toString('base64'),tag:c.getAuthTag().toString('base64')}; }
-function decryptConfigSecret(row:any){ if(!row?.entra_client_secret_enc) return ''; try { const d=crypto.createDecipheriv('aes-256-gcm',configCipherKey(),Buffer.from(row.entra_client_secret_iv,'base64')); d.setAuthTag(Buffer.from(row.entra_client_secret_tag,'base64')); return Buffer.concat([d.update(Buffer.from(row.entra_client_secret_enc,'base64')),d.final()]).toString('utf8'); } catch{return '';} }
-
-app.get('/api/auth/me', async (req,res)=>{
-  const user=getUserFromRequest(req); const entra=await getEntraConfig(); const row=await dbStore.getSystemSettings();
-  res.json({isAuthenticated:Boolean(user), user, isConfigured:Boolean(entra.clientId&&(entra.clientSecret||row?.entra_client_secret_enc)), clientIdAvailable:Boolean(entra.clientId)});
+app.get('/api/auth/me', (req,res)=>{
+  const user=getUserFromRequest(req);
+  res.json({isAuthenticated:Boolean(user), user, isConfigured:Boolean(process.env.MICROSOFT_CLIENT_ID && process.env.MICROSOFT_CLIENT_SECRET), clientIdAvailable:Boolean(process.env.MICROSOFT_CLIENT_ID)});
 });
 
-app.get('/api/auth/microsoft/url', async (req,res)=>{
-  const entra=await getEntraConfig();
-  const clientId=entra.clientId;
-  const tenant=entra.tenantId || 'common';
+app.get('/api/auth/microsoft/url', (req,res)=>{
+  const clientId=process.env.MICROSOFT_CLIENT_ID;
+  const tenant=process.env.MICROSOFT_TENANT_ID || 'common';
   const redirectUri=getMicrosoftRedirectUri(req);
   if(!clientId) return res.json({isConfigured:false,url:null,message:'MICROSOFT_CLIENT_ID non configuré.',redirectUri});
   const configuredOrigin = String(process.env.APP_URL || '').trim();
@@ -828,9 +800,8 @@ app.get('/api/auth/microsoft/url', async (req,res)=>{
 });
 
 app.get('/auth/microsoft/login', async (req,res)=>{
-  const entra=await getEntraConfig();
-  const clientId=entra.clientId;
-  const tenant=entra.tenantId || 'common';
+  const clientId=process.env.MICROSOFT_CLIENT_ID;
+  const tenant=process.env.MICROSOFT_TENANT_ID || 'common';
   const redirectUri=getMicrosoftRedirectUri(req);
   if(!clientId) return res.status(503).send('Microsoft Entra ID n’est pas configuré.');
   const origin=(process.env.APP_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/,'');
@@ -849,8 +820,7 @@ app.get(['/auth/microsoft/callback','/auth/microsoft/callback/'],async(req,res)=
   if(!stateInfo) return res.status(400).send(`<!doctype html><p>Session OAuth invalide ou expirée.</p>${post({type:'OAUTH_AUTH_ERROR',error:'État OAuth invalide ou expiré.'})}`);
   if(req.query.error) return res.status(400).send(`<!doctype html><p>Authentification Microsoft annulée.</p>${post({type:'OAUTH_AUTH_ERROR',error:String(req.query.error_description||req.query.error)})}`);
   const code=typeof req.query.code==='string'?req.query.code:null;
-  const entra=await getEntraConfig();
-  const clientId=entra.clientId, clientSecret=entra.clientSecret || decryptConfigSecret(await dbStore.getSystemSettings()), tenant=entra.tenantId||'common';
+  const clientId=process.env.MICROSOFT_CLIENT_ID, clientSecret=process.env.MICROSOFT_CLIENT_SECRET, tenant=process.env.MICROSOFT_TENANT_ID||'common';
   if(!code || !clientId || !clientSecret) return res.status(500).send(`<!doctype html><p>Configuration Microsoft incomplète.</p>${post({type:'OAUTH_AUTH_ERROR',error:'Configuration Microsoft incomplète.'})}`);
   try {
     const redirectUri=getMicrosoftRedirectUri(req);
@@ -882,46 +852,68 @@ app.get(['/auth/microsoft/callback','/auth/microsoft/callback/'],async(req,res)=
 
 app.post('/api/auth/logout',(req,res)=>{clearSession(res);res.json({success:true});});
 
-// Local administrator authentication is database-backed; no .env password is required.
-const localAdminEnabled = () => true;
-const localAdminEmail = () => 'admin@local';
-const localAdminPassword = () => '';
-const localAdminDisplayName = () => 'Administrateur local';
+// Local administrator authentication. This is intentionally independent from Entra ID
+// so the first administrator can configure the tenant/SSO before Microsoft OAuth is ready.
+const localAdminEnabled = () => process.env.LOCAL_ADMIN_ENABLED !== 'false';
+const localAdminEmail = () => (process.env.LOCAL_ADMIN_EMAIL || 'admin@local').trim().toLowerCase();
+const localAdminPassword = () => process.env.LOCAL_ADMIN_PASSWORD || '';
+const localAdminDisplayName = () => process.env.LOCAL_ADMIN_NAME || 'Administrateur local';
 const localLoginAttempts = new Map<string, { count: number; resetAt: number }>();
+
 function sameSecret(a: string, b: string): boolean {
   const ah = crypto.createHash('sha256').update(a).digest();
   const bh = crypto.createHash('sha256').update(b).digest();
   return crypto.timingSafeEqual(ah, bh);
 }
-function passwordHash(password:string){ return crypto.scryptSync(password, runtimeSecret().slice(0,32) || 'clarity', 64).toString('hex'); }
-function passwordMatches(password:string, hash:string){ try{return crypto.timingSafeEqual(Buffer.from(passwordHash(password),'hex'),Buffer.from(hash,'hex'));}catch{return false;} }
+
 function localLoginAllowed(ip: string): boolean {
-  const now=Date.now(), current=localLoginAttempts.get(ip);
-  if(!current||current.resetAt<=now){localLoginAttempts.set(ip,{count:1,resetAt:now+60000});return true;}
-  if(current.count>=10)return false; current.count+=1; return true;
+  const now = Date.now();
+  const current = localLoginAttempts.get(ip);
+  if (!current || current.resetAt <= now) {
+    localLoginAttempts.set(ip, { count: 1, resetAt: now + 60_000 });
+    return true;
+  }
+  if (current.count >= 10) return false;
+  current.count += 1;
+  return true;
 }
-app.get('/api/setup/status', async (_req,res)=>{
-  try { const row=await dbStore.getSystemSettings(); res.json({configured:Boolean(row?.local_admin_password_hash), entraConfigured:Boolean(row?.entra_client_id && (row?.entra_client_secret_enc || process.env.MICROSOFT_CLIENT_SECRET))}); }
-  catch(e:any){res.status(500).json({error:e?.message||'État du système indisponible.'});}
-});
-app.post('/api/setup/admin', async (req,res)=>{
-  try {
-    const row=await dbStore.getSystemSettings();
-    if(row?.local_admin_password_hash) return res.status(409).json({error:'Administrateur déjà initialisé.'});
-    const email=String(req.body?.email||'').trim().toLowerCase(), password=String(req.body?.password||''), name=String(req.body?.displayName||'Administrateur système').trim();
-    if(!email||password.length<10) return res.status(400).json({error:'Email obligatoire et mot de passe de 10 caractères minimum.'});
-    await dbStore.saveSystemSettings({local_admin_email:email,local_admin_name:name,local_admin_password_hash:passwordHash(password)});
-    res.json({success:true});
-  } catch(e:any){res.status(500).json({error:e?.message||'Initialisation impossible.'});}
-});
-app.post('/api/auth/login-password',async(req,res)=>{
-  const email=String(req.body?.email||'').trim().toLowerCase(), password=String(req.body?.password||''), ip=req.ip||req.socket.remoteAddress||'unknown';
-  if(!localLoginAllowed(ip)) return res.status(429).json({success:false,error:'Trop de tentatives. Réessayez dans une minute.'});
-  const row=await dbStore.getSystemSettings();
-  if(!row?.local_admin_password_hash) return res.status(503).json({success:false,error:'Administrateur non initialisé. Utilisez l’assistant de première configuration.'});
-  if(email!==String(row.local_admin_email||'').toLowerCase() || !passwordMatches(password,String(row.local_admin_password_hash))) return res.status(401).json({success:false,error:'Identifiant ou mot de passe incorrect.'});
-  const user:MicrosoftSessionUser={id:'local-admin',displayName:String(row.local_admin_name||'Administrateur système'),email,role:'ADMINISTRATEUR',jobTitle:'Administrateur système',department:'CLARITY PM',tenantId:'local',authProvider:'LOCAL',connectedAt:new Date().toISOString()};
-  setSession(res,user); res.json({success:true,user});
+
+app.post('/api/auth/login-password',(req,res)=>{
+  if (!localAdminEnabled()) {
+    return res.status(404).json({ success:false, error:'Connexion locale désactivée.' });
+  }
+
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  const password = String(req.body?.password || '');
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+
+  if (!localLoginAllowed(ip)) {
+    return res.status(429).json({ success:false, error:'Trop de tentatives. Réessayez dans une minute.' });
+  }
+
+  const configuredPassword = localAdminPassword();
+  if (!configuredPassword) {
+    return res.status(503).json({ success:false, error:'LOCAL_ADMIN_PASSWORD n’est pas configuré.' });
+  }
+
+  if (email !== localAdminEmail() || !sameSecret(password, configuredPassword)) {
+    return res.status(401).json({ success:false, error:'Identifiant ou mot de passe incorrect.' });
+  }
+
+  const user: MicrosoftSessionUser = {
+    id: 'local-admin',
+    displayName: localAdminDisplayName(),
+    email: localAdminEmail(),
+    role: 'ADMINISTRATEUR',
+    jobTitle: 'Administrateur',
+    department: 'CLARITY PM',
+    tenantId: 'local',
+    authProvider: 'LOCAL',
+    connectedAt: new Date().toISOString(),
+  };
+
+  setSession(res, user);
+  res.json({ success:true, user });
 });
 
 app.post('/api/auth/microsoft/demo-login',(req,res)=>{
@@ -930,37 +922,23 @@ app.post('/api/auth/microsoft/demo-login',(req,res)=>{
   setSession(res,user); res.json({success:true,user});
 });
 
-app.get('/api/auth/config-info',async (req,res)=>{const appUrl=process.env.APP_URL||`${req.protocol}://${req.get('host')}`;const redirectUri=getMicrosoftRedirectUri(req);const entra=await getEntraConfig(); const row=await dbStore.getSystemSettings(); res.json({devCallbackUrl:redirectUri,sharedCallbackUrl:redirectUri,isConfigured:Boolean(entra.clientId&&(entra.clientSecret||row?.entra_client_secret_enc)),clientId:entra.clientId?'Configuré':'Non configuré',tenantId:entra.tenantId?'Configuré':'Non configuré',demoMode:process.env.DEMO_MODE==='true',localAuthEnabled:localAdminEnabled(),localAdminEmail:String(row?.local_admin_email||localAdminEmail())});});
+app.get('/api/auth/config-info',(req,res)=>{const appUrl=process.env.APP_URL||`${req.protocol}://${req.get('host')}`;const redirectUri=getMicrosoftRedirectUri(req);res.json({devCallbackUrl:redirectUri,sharedCallbackUrl:redirectUri,isConfigured:Boolean(process.env.MICROSOFT_CLIENT_ID&&process.env.MICROSOFT_CLIENT_SECRET),clientId:process.env.MICROSOFT_CLIENT_ID?'Configuré':'Non configuré',tenantId:process.env.MICROSOFT_TENANT_ID?'Configuré':'Non configuré',demoMode:process.env.DEMO_MODE==='true',localAuthEnabled:localAdminEnabled(),localAdminEmail:localAdminEmail()});});
 
 // API: Admin Settings & Integration Tests
-app.post('/api/admin/ad/test-connection', requireAuth, requireRole(RBAC.canAccessAdmin), async (req: Request, res: Response) => {
-  const row=await dbStore.getSystemSettings(); const secretValue=decryptConfigSecret(row); const clientId=String(row?.entra_client_id||'').trim(); const tenantId=String(row?.entra_tenant_id||'').trim();
-  if(!clientId||!tenantId||!secretValue) return res.status(503).json({success:false,error:'Entra ID incomplet : renseignez Tenant ID, Client ID et Client Secret depuis le web.'});
-  try { const r=await fetch(`https://login.microsoftonline.com/${encodeURIComponent(tenantId)}/v2.0/.well-known/openid-configuration`); if(!r.ok) throw new Error(`Tenant HTTP ${r.status}`); res.json({success:true,message:'Entra ID joignable et configuration valide.',tenantId,latencyMs:0,timestamp:new Date().toISOString()}); } catch(e:any){res.status(503).json({success:false,error:e?.message||'Impossible de joindre Entra ID.'});}
+app.post('/api/admin/ad/test-connection', requireAuth, requireRole(RBAC.canAccessAdmin), (req: Request, res: Response) => {
+  const configured=Boolean(process.env.MICROSOFT_CLIENT_ID&&process.env.MICROSOFT_CLIENT_SECRET);
+  if(!configured) return res.status(503).json({success:false,error:'Microsoft Entra ID n’est pas configuré.'});
+  res.json({success:true,message:'Configuration Microsoft Entra ID détectée.',tenantId:process.env.MICROSOFT_TENANT_ID||'common',timestamp:new Date().toISOString()});
 });
 
 app.post('/api/admin/postgres/test-connection', requireAuth, requireRole(RBAC.canAccessAdmin), async (req: Request, res: Response) => {
-  const b=req.body||{}; const host=String(b.host||process.env.POSTGRES_HOST||'postgres'); const port=Number(b.port||5432);
-  const database=String(b.database||process.env.POSTGRES_DB||'clarity_pm_enterprise'); const user=String(b.user||process.env.POSTGRES_USER||'clarity_admin');
-  const password=String(b.password||process.env.POSTGRES_PASSWORD||'clarity_change_me'); const sslMode=String(b.sslMode||'disable');
-  const pg:any = await import('pg'); const Pool=pg.default?.Pool||pg.Pool; const started=Date.now();
-  const testPool=new Pool({host,port,database,user,password,ssl:sslMode==='disable'?false:{rejectUnauthorized:false},max:1,connectionTimeoutMillis:5000});
-  try { const r=await testPool.query(`SELECT COUNT(*)::int AS count FROM information_schema.tables WHERE table_schema='public'`); res.json({success:true,message:'Connexion PostgreSQL vérifiée.',latencyMs:Date.now()-started,tablesCount:Number(r.rows[0]?.count||0),host,database,timestamp:new Date().toISOString()}); }
-  catch(e:any){res.status(503).json({success:false,error:e?.message||'Connexion PostgreSQL impossible.'});} finally {await testPool.end().catch(()=>{});}
-});
-
-app.get('/api/admin/system-config', requireAuth, requireRole(RBAC.canAccessAdmin), async (_req,res)=>{
-  try { const row=await dbStore.getSystemSettings(); res.json({success:true,entra:{tenantId:row?.entra_tenant_id||'',clientId:row?.entra_client_id||'',clientSecretConfigured:Boolean(row?.entra_client_secret_enc),domain:row?.entra_domain||'',syncIntervalHours:Number(row?.entra_sync_interval_hours||4),autoProvisionUsers:row?.entra_auto_provision!==false,defaultRole:row?.entra_default_role||'CHEF_PROJET'},postgres:{host:process.env.POSTGRES_HOST||'postgres',port:Number(process.env.POSTGRES_PORT||5432),database:process.env.POSTGRES_DB||'clarity_pm_enterprise',user:process.env.POSTGRES_USER||'clarity_admin',passwordConfigured:Boolean(process.env.POSTGRES_PASSWORD),runtimeManaged:true}}); }
-  catch(e:any){res.status(500).json({success:false,error:e?.message||'Configuration indisponible.'});}
-});
-app.put('/api/admin/system-config', requireAuth, requireRole(RBAC.canAccessAdmin), async (req,res)=>{
+  const pool = getPgPool();
+  if (!pool) return res.status(503).json({success:false,error:'PostgreSQL n’est pas configuré.'});
+  const started=Date.now();
   try {
-    const row=await dbStore.getSystemSettings(); const body=req.body||{}; const entra=body.entra||{}; const secretInput=String(entra.clientSecret||'').trim(); const enc=secretInput?encryptConfigSecret(secretInput):null;
-    await dbStore.saveSystemSettings({entra_client_id:String(entra.clientId||''),entra_tenant_id:String(entra.tenantId||''),entra_domain:String(entra.domain||''),entra_sync_interval_hours:Number(entra.syncIntervalHours||4),entra_auto_provision:entra.autoProvisionUsers!==false,entra_default_role:'CHEF_PROJET',
-      entra_client_secret_enc:enc?.enc ?? row?.entra_client_secret_enc ?? null,entra_client_secret_iv:enc?.iv ?? row?.entra_client_secret_iv ?? null,entra_client_secret_tag:enc?.tag ?? row?.entra_client_secret_tag ?? null});
-    await profileAudit(req,'UPDATE_SYSTEM_INTEGRATIONS','system',{entra:true});
-    res.json({success:true});
-  } catch(e:any){res.status(400).json({success:false,error:e?.message||'Enregistrement impossible.'});}
+    const result=await pool.query(`SELECT COUNT(*)::int AS count FROM information_schema.tables WHERE table_schema='public'`);
+    res.json({success:true,message:'Connexion PostgreSQL vérifiée.',latencyMs:Date.now()-started,tablesCount:result.rows[0]?.count||0,timestamp:new Date().toISOString()});
+  } catch(e:any) { res.status(503).json({success:false,error:e?.message||'Connexion PostgreSQL impossible.'}); }
 });
 
 app.get('/api/admin/ai/config', requireAuth, requireRole(RBAC.canAccessAdmin), async (_req, res) => {
@@ -1023,7 +1001,7 @@ app.get('/api/admin/integrations/status', requireAuth, requireRole(RBAC.canAcces
   const pool=getPgPool(); let postgres:any={configured:Boolean(pool),connected:false,latencyMs:null,tables:0};
   if(pool){const started=Date.now();try{const r=await pool.query(`SELECT COUNT(*)::int AS count FROM information_schema.tables WHERE table_schema='public'`);postgres={configured:true,connected:true,latencyMs:Date.now()-started,tables:Number(r.rows[0]?.count||0)};}catch{}}
   let providers:any[]=[];try{providers=await listAIRouterAccounts();}catch{}
-  res.json({success:true,integrations:{entra:{configured:Boolean((await dbStore.getSystemSettings())?.entra_client_id && (await dbStore.getSystemSettings())?.entra_tenant_id && (await dbStore.getSystemSettings())?.entra_client_secret_enc),tenantConfigured:Boolean((await dbStore.getSystemSettings())?.entra_tenant_id),redirectConfigured:Boolean(process.env.APP_URL||process.env.MICROSOFT_REDIRECT_URI)},postgres,aiGateway:{configured:providers.length>0,active:providers.filter(x=>x.enabled).length,providers:providers.map(x=>({id:x.id,name:x.name,provider:x.provider,model:x.model,enabled:x.enabled,lastError:x.lastError}))},copilotStudio:{configured:Boolean(COPILOT_DIRECTLINE_TOKEN_ENDPOINT),agentConfigured:Boolean(COPILOT_AGENT_ID),tenantConfigured:Boolean(COPILOT_TENANT_ID)},documentAI:{supportedExtensions:['.xlsx','.xls','.csv','.pdf','.docx','.txt','.md','.json'],maxFileSizeMb:10,maxFiles:10,semanticProcessing:true}}});
+  res.json({success:true,integrations:{entra:{configured:Boolean(process.env.MICROSOFT_CLIENT_ID&&process.env.MICROSOFT_CLIENT_SECRET&&process.env.MICROSOFT_TENANT_ID),tenantConfigured:Boolean(process.env.MICROSOFT_TENANT_ID),redirectConfigured:Boolean(process.env.MICROSOFT_REDIRECT_URI||process.env.APP_URL)},postgres,aiGateway:{configured:providers.length>0,active:providers.filter(x=>x.enabled).length,providers:providers.map(x=>({id:x.id,name:x.name,provider:x.provider,model:x.model,enabled:x.enabled,lastError:x.lastError}))},copilotStudio:{configured:Boolean(COPILOT_DIRECTLINE_TOKEN_ENDPOINT),agentConfigured:Boolean(COPILOT_AGENT_ID),tenantConfigured:Boolean(COPILOT_TENANT_ID)},documentAI:{supportedExtensions:['.xlsx','.xls','.csv','.pdf','.docx','.txt','.md','.json'],maxFileSizeMb:10,maxFiles:10,semanticProcessing:true}}});
 });
 
 app.post('/api/admin/copilot/test', requireAuth, requireRole(RBAC.canAccessAdmin), async (req: Request, res: Response) => {

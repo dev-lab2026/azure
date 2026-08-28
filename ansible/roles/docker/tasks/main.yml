@@ -1,29 +1,131 @@
 ---
-- name: Install required packages
-  ansible.builtin.apt:
-    name:
-      - ca-certificates
-      - curl
-      - git
-    state: present
-    update_cache: true
+- name: Define application paths
+  ansible.builtin.set_fact:
+    app_dir: /opt/clarity
+    compose_dir: /opt/clarity/app
+    compose_file: docker-compose.yml
 
-- name: Install Docker
-  ansible.builtin.apt:
-    name:
-      - docker.io
-      - docker-compose-v2
-    state: present
-    update_cache: true
+- name: Create application directory
+  ansible.builtin.file:
+    path: "{{ app_dir }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0755"
 
-- name: Enable Docker
-  ansible.builtin.service:
-    name: docker
-    state: started
-    enabled: true
+- name: Checkout application repository
+  ansible.builtin.git:
+    repo: "https://github.com/dev-lab2026/azure.git"
+    dest: "{{ app_dir }}"
+    version: main
+    force: true
+    update: true
 
-- name: Add admin user to docker group
-  ansible.builtin.user:
-    name: "{{ ansible_user }}"
-    groups: docker
-    append: true
+- name: Show Git commit
+  ansible.builtin.command:
+    cmd: git rev-parse HEAD
+    chdir: "{{ app_dir }}"
+  register: git_commit
+  changed_when: false
+
+- name: Display Git commit
+  ansible.builtin.debug:
+    msg: "Application repository commit: {{ git_commit.stdout }}"
+
+- name: Verify application directory
+  ansible.builtin.stat:
+    path: "{{ compose_dir }}"
+  register: application_directory
+
+- name: Verify Docker Compose file
+  ansible.builtin.stat:
+    path: "{{ compose_dir }}/{{ compose_file }}"
+  register: compose_file_stat
+
+- name: Fail if Docker Compose file is missing
+  ansible.builtin.assert:
+    that:
+      - compose_file_stat.stat.exists
+      - compose_file_stat.stat.isreg
+    fail_msg: "Docker Compose file not found: {{ compose_dir }}/{{ compose_file }}"
+
+# ==========================================================
+# ENV FILE
+# ==========================================================
+
+- name: Create production .env
+  ansible.builtin.copy:
+    content: "{{ lookup('env', 'ENV_FILE') | trim }}\n"
+    dest: "{{ compose_dir }}/.env"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0600"
+  no_log: true
+
+- name: Verify .env exists
+  ansible.builtin.stat:
+    path: "{{ compose_dir }}/.env"
+  register: env_file
+
+- name: Fail if .env is missing
+  ansible.builtin.assert:
+    that:
+      - env_file.stat.exists
+      - env_file.stat.isreg
+      - env_file.stat.size > 0
+    fail_msg: ".env is missing or empty."
+
+# ==========================================================
+# DOCKER COMPOSE VALIDATION
+# ==========================================================
+
+- name: Validate Docker Compose
+  ansible.builtin.command:
+    cmd: docker compose --env-file .env -f "{{ compose_file }}" config
+    chdir: "{{ compose_dir }}"
+  register: compose_config
+  changed_when: false
+
+- name: Display Compose validation
+  ansible.builtin.debug:
+    msg: "Docker Compose configuration is valid."
+
+# ==========================================================
+# STOP OLD APPLICATION
+# ==========================================================
+
+- name: Stop existing application
+  ansible.builtin.command:
+    cmd: docker compose --env-file .env -f "{{ compose_file }}" down --remove-orphans
+    chdir: "{{ compose_dir }}"
+  failed_when: false
+  changed_when: false
+
+# ==========================================================
+# BUILD AND START
+# ==========================================================
+
+- name: Build and start application
+  ansible.builtin.command:
+    cmd: docker compose --env-file .env -f "{{ compose_file }}" up -d --build
+    chdir: "{{ compose_dir }}"
+  register: compose_up
+
+- name: Display Docker Compose output
+  ansible.builtin.debug:
+    var: compose_up.stdout_lines
+
+# ==========================================================
+# STATUS
+# ==========================================================
+
+- name: Show Docker Compose status
+  ansible.builtin.command:
+    cmd: docker compose --env-file .env -f "{{ compose_file }}" ps
+    chdir: "{{ compose_dir }}"
+  register: compose_status
+  changed_when: false
+
+- name: Display Docker Compose status
+  ansible.builtin.debug:
+    var: compose_status.stdout_lines

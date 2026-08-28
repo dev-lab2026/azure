@@ -4,7 +4,8 @@ import { UserProfile, UserRole } from '../types';
 
 const ROLES: { value: UserRole; label: string }[] = [
   { value: 'ADMINISTRATEUR', label: 'Administrateur' },
-    { value: 'PMO', label: 'PMO' },
+  { value: 'DIRECTEUR_PROJETS', label: 'Directeur de projets' },
+  { value: 'PMO', label: 'PMO' },
   { value: 'CHEF_PROJET', label: 'Chef de projet' },
   { value: 'CONTRIBUTEUR', label: 'Contributeur' },
 ];
@@ -129,7 +130,7 @@ export const UserProfilesManager: React.FC = () => {
         <div className="flex items-center justify-between mb-5"><div><h3 className="text-lg font-black text-slate-900">{editing?'Modifier le profil':'Créer un profil'}</h3><p className="text-xs text-slate-500">L'administrateur CLARITY PM définit le rôle et les droits.</p></div><button type="button" onClick={close} className="p-2 rounded-xl hover:bg-slate-100"><X className="w-5 h-5"/></button></div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {([['displayName','Nom affiché'],['email','Email'],['jobTitle','Poste'],['department','Département'],['officeLocation','Localisation'],['azureOid','Object ID Entra (optionnel)']] as const).map(([key,label])=><label key={key} className="text-xs font-bold text-slate-700">{label}<input value={form[key]} onChange={e=>setForm({...form,[key]:e.target.value})} required={key==='displayName'||key==='email'} disabled={editing?.id==='local-admin' && key==='email'} className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-slate-50 text-xs font-normal focus:bg-white focus:ring-2 focus:ring-indigo-500"/></label>)}
-          <label className="text-xs font-bold text-slate-700">Rôle<select value={form.role} onChange={e=>setForm({...form,role:e.target.value as UserRole})} className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-slate-50 text-xs"><option value="ADMINISTRATEUR">Administrateur</option><option value="PMO">PMO</option><option value="CHEF_PROJET">Chef de projet</option><option value="CONTRIBUTEUR">Contributeur</option></select></label>
+          <label className="text-xs font-bold text-slate-700">Rôle<select value={form.role} onChange={e=>setForm({...form,role:e.target.value as UserRole})} className="mt-1 w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-slate-50 text-xs"><option value="ADMINISTRATEUR">Administrateur</option><option value="DIRECTEUR_PROJETS">Directeur de projets</option><option value="PMO">PMO</option><option value="CHEF_PROJET">Chef de projet</option><option value="CONTRIBUTEUR">Contributeur</option></select></label>
           <label className="flex items-center gap-2 text-xs font-bold text-slate-700 pt-6"><input type="checkbox" checked={form.isActive} onChange={e=>setForm({...form,isActive:e.target.checked})} className="w-4 h-4"/>Profil actif</label>
         </div>
         <div className="mt-6 flex justify-end gap-2"><button type="button" onClick={close} className="px-4 py-2.5 rounded-xl border border-slate-200 text-xs font-bold">Annuler</button><button disabled={saving} className="px-4 py-2.5 rounded-xl bg-indigo-600 text-white text-xs font-bold">{saving?'Enregistrement...':editing?'Enregistrer les modifications':'Créer le profil'}</button></div>

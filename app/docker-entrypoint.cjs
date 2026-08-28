@@ -25,7 +25,3 @@ child.on('error', (err) => {
   console.error('Failed to start CLARITY server:', err);
   process.exit(1);
 });
-
-// Deployment diagnostics: make startup failures visible in Docker logs.
-process.on('uncaughtException', (err) => { console.error('[CLARITY STARTUP] uncaughtException:', err); process.exit(1); });
-process.on('unhandledRejection', (err) => { console.error('[CLARITY STARTUP] unhandledRejection:', err); process.exit(1); });
