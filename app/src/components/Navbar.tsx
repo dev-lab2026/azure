@@ -280,16 +280,16 @@ export const Navbar: React.FC<NavbarProps> = ({
               </button>
             )}
 
-            {/* Import JSON contrôlé par rôle */}
-            {userRole !== 'ADMINISTRATEUR' && (
+            {/* Import intelligent Excel/CSV contrôlé par rôle */}
+            {(userRole === 'ADMINISTRATEUR' || userRole === 'DIRECTEUR_PROJETS' || userRole === 'PMO' || userRole === 'CHEF_PROJET') && (
               <button
                 id="btn-import-json"
                 onClick={onOpenJsonImport}
-                title="Importer des projets, tâches ou jalons en JSON"
+                title="Importer intelligemment des projets, tâches et jalons depuis Excel ou CSV"
                 className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100 transition-colors flex items-center gap-1 cursor-pointer"
               >
                 <Upload className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Importer JSON</span>
+                <span className="hidden sm:inline">Importer Excel</span>
               </button>
             )}
 

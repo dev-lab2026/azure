@@ -1800,6 +1800,121 @@ app.delete('/api/projects/:id', async (req: Request, res: Response) => {
 
 // JSON import — Projects for Director, Tasks/Milestones for other project roles.
 const JSON_IMPORT_LIMIT = 500;
+
+function excelNormalizeHeader(value: unknown): string {
+  return String(value ?? '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .trim().toLowerCase()
+    .replace(/[^a-z0-9]+/g, '');
+}
+
+function excelParseDate(value: unknown): string | undefined {
+  if (value === null || value === undefined || value === '') return undefined;
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().slice(0, 10);
+  if (typeof value === 'number') {
+    const d = XLSX.SSF.parse_date_code(value);
+    if (d) return `${String(d.y).padStart(4,'0')}-${String(d.m).padStart(2,'0')}-${String(d.d).padStart(2,'0')}`;
+  }
+  const raw = String(value).trim();
+  const m = raw.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})$/);
+  if (m) return `${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`;
+  const iso = new Date(raw);
+  return Number.isNaN(iso.getTime()) ? undefined : iso.toISOString().slice(0,10);
+}
+
+function excelNumber(value: unknown): number {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  const n = Number(String(value ?? '').replace(/\s/g,'').replace(',', '.').replace(/[€$£]/g,''));
+  return Number.isFinite(n) ? n : 0;
+}
+
+function excelBool(value: unknown): boolean {
+  return ['true','1','yes','oui','x','done','termine','terminé','completed'].includes(
+    String(value ?? '').trim().toLowerCase()
+  );
+}
+
+function excelRowsToRecords(sheetName: string, rows: any[][]) {
+  const headerIndex = rows.findIndex(r => r.some(v => String(v ?? '').trim() !== ''));
+  if (headerIndex < 0) return { sheet: sheetName, type: 'unknown', headers: [], rows: [], confidence: 0 };
+  const rawHeaders = rows[headerIndex].map((v:any,i:number)=>String(v ?? `Colonne ${i+1}`).trim());
+  const headers = rawHeaders.map(excelNormalizeHeader);
+  const data = rows.slice(headerIndex + 1).filter(r => r.some(v => String(v ?? '').trim() !== ''));
+  const has = (...names:string[]) => names.some(n => headers.includes(n));
+  let type: 'projects'|'tasks'|'milestones'|'unknown' = 'unknown';
+  let confidence = 0;
+  if (has('milestone','milestoneid','jalon','jalonid','targetdate','datejalon')) { type='milestones'; confidence=0.9; }
+  if (has('task','taskid','tache','tacheid','taskname','tasktitle','wbs')) { type='tasks'; confidence=0.92; }
+  if (has('project','projectid','projectcode','projet','codeprojet','projectname','projecttitle')) {
+    if (type === 'unknown' || (!has('task','tache','milestone','jalon'))) { type='projects'; confidence=0.9; }
+  }
+  if (type === 'unknown' && (has('name','nom') && has('startdate','debut','enddate','fin'))) { type='projects'; confidence=0.7; }
+  if (type === 'unknown' && (has('title','titre') && has('duedate','echeance','enddate'))) { type='tasks'; confidence=0.65; }
+
+  const records = data.map(row => {
+    const obj:any = {};
+    rawHeaders.forEach((h,i) => { obj[h] = row[i]; });
+    const normalized:any = {};
+    headers.forEach((h,i) => { normalized[h] = row[i]; });
+    return normalized;
+  });
+
+  const mapped = records.map(r => {
+    const pick=(...keys:string[])=>{ for(const k of keys){ if(r[k]!==undefined && String(r[k]).trim()!=='') return r[k]; } return undefined; };
+    if(type==='projects') return {
+      code:String(pick('code','projectcode','codeprojet','projectid') ?? '').trim(),
+      name:String(pick('name','projectname','projecttitle','nom','projet','title','titre') ?? '').trim(),
+      description:String(pick('description','desc') ?? ''),
+      client:String(pick('client','customer','clientname') ?? 'Direction Générale'),
+      managerName:String(pick('managername','manager','chefdeprojet','projectmanager','chefprojet') ?? ''),
+      status:String(pick('status','statut','etat') ?? 'PLANNING').toUpperCase(),
+      priority:String(pick('priority','priorite','priorite') ?? 'MEDIUM').toUpperCase(),
+      methodology:String(pick('methodology','methodologie') ?? 'HYBRID').toUpperCase(),
+      startDate:excelParseDate(pick('startdate','debut','datedebut','start')),
+      endDate:excelParseDate(pick('enddate','fin','datefin','end')),
+      totalBudget:excelNumber(pick('totalbudget','budget','budgetbac','bac')),
+      currency:String(pick('currency','devise') ?? 'EUR')
+    };
+    if(type==='tasks') return {
+      projectId:String(pick('projectid','idproject','projetid') ?? '').trim(),
+      projectCode:String(pick('projectcode','codeprojet','project','projet','code') ?? '').trim(),
+      title:String(pick('title','tasktitle','taskname','name','tache','tachetitle','titre') ?? '').trim(),
+      description:String(pick('description','desc') ?? ''),
+      status:String(pick('status','statut','etat') ?? 'TODO').toUpperCase(),
+      priority:String(pick('priority','priorite') ?? 'MEDIUM').toUpperCase(),
+      assigneeId:String(pick('assigneeid','resourceid','userid','utilisateurid') ?? '').trim() || undefined,
+      startDate:excelParseDate(pick('startdate','debut','datedebut','start')),
+      dueDate:excelParseDate(pick('duedate','enddate','echeance','datefin','fin','end')),
+      estimatedHours:excelNumber(pick('estimatedhours','plannedhours','heuresprevues','charge')),
+      actualHours:excelNumber(pick('actualhours','heuresreelles')),
+      completionPercent:excelNumber(pick('completionpercent','progress','avancement','progression')),
+      costEstimated:excelNumber(pick('costestimated','plannedcost','coutprevu')),
+      costActual:excelNumber(pick('costactual','actualcost','coutreel')),
+      category:String(pick('category','categorie') ?? 'Général')
+    };
+    return {
+      projectId:String(pick('projectid','idproject','projetid') ?? '').trim(),
+      projectCode:String(pick('projectcode','codeprojet','project','projet','code') ?? '').trim(),
+      title:String(pick('title','milestonetitle','milestonename','name','jalon','titre') ?? '').trim(),
+      targetDate:excelParseDate(pick('targetdate','datejalon','duedate','date','echeance')),
+      completed:excelBool(pick('completed','complete','termine','terminee','done')),
+      description:String(pick('description','desc') ?? ''),
+      deliverable:String(pick('deliverable','livrable') ?? '')
+    };
+  });
+  return { sheet: sheetName, type, headers: rawHeaders, rows: mapped, confidence };
+}
+
+function analyzeExcelWorkbook(buffer: Buffer) {
+  const workbook = XLSX.read(buffer, { type:'buffer', cellDates:true });
+  const sheets = workbook.SheetNames.map(name => {
+    const ws=workbook.Sheets[name];
+    const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:null,raw:true}) as any[][];
+    return excelRowsToRecords(name, rows);
+  });
+  return sheets;
+}
+
 function normalizeJsonImport(type: 'projects'|'tasks'|'milestones', items: any[], user: MicrosoftSessionUser) {
   const errors: string[] = [];
   const normalized: any[] = [];
@@ -1855,15 +1970,87 @@ function normalizeJsonImport(type: 'projects'|'tasks'|'milestones', items: any[]
   return { items: normalized, errors, validCount: normalized.length, errorCount: errors.length, duplicateCount: errors.filter(e => /doublon|existe déjà/.test(e)).length };
 }
 
+
+app.post('/api/import-excel/preview', requireOrigin, requireAuth, upload.single('file'), async (req: Request, res: Response) => {
+  const user = currentUser(req);
+  if (!req.file) return res.status(400).json({ error: 'Aucun fichier Excel fourni.' });
+  const ext = path.extname(req.file.originalname).toLowerCase();
+  if (!['.xlsx','.xls','.csv'].includes(ext)) return res.status(400).json({ error: 'Format accepté : XLSX, XLS ou CSV.' });
+  try {
+    const sheets = analyzeExcelWorkbook(req.file.buffer);
+    const all:any[] = [];
+    for (const sh of sheets) {
+      if (sh.type !== 'unknown') all.push(...sh.rows.map((r:any,i:number)=>({ ...r, _sheet:sh.sheet, _row:i+2 })));
+    }
+    if (!all.length) return res.status(400).json({ error: 'Aucune donnée métier reconnue dans le fichier.' });
+    // Normalize through the same server-side business rules used by JSON import.
+    const grouped:any = { projects:[], tasks:[], milestones:[] };
+    all.forEach(r => { const clean={...r}; delete clean._sheet; delete clean._row; if (sheets.find(x=>x.sheet===r._sheet)?.type==='projects') grouped.projects.push(clean); else if (sheets.find(x=>x.sheet===r._sheet)?.type==='tasks') grouped.tasks.push(clean); else grouped.milestones.push(clean); });
+    const results:any = {};
+    // First normalize projects so tasks/jalons from the same workbook can immediately
+    // reference a newly imported project by its Project Code.
+    if (grouped.projects.length) results.projects = normalizeJsonImport('projects', grouped.projects, user);
+    const stagedProjects = new Map<string, any>();
+    (results.projects?.items || []).forEach((p:any) => stagedProjects.set(String(p.code).toLowerCase(), p));
+    for (const type of ['tasks','milestones'] as const) {
+      if (!grouped[type].length) continue;
+      const prepared = grouped[type].map((item:any) => {
+        if (!item.projectId && item.projectCode) {
+          const staged = stagedProjects.get(String(item.projectCode).toLowerCase());
+          if (staged) return { ...item, projectId: staged.id };
+        }
+        return item;
+      });
+      results[type] = normalizeJsonImport(type, prepared, user);
+    }
+    res.json({ success:true, data:{ file:req.file.originalname, sheets, results, totals:{ projects:results.projects?.validCount||0, tasks:results.tasks?.validCount||0, milestones:results.milestones?.validCount||0 } }});
+  } catch (e:any) {
+    console.error('Excel preview failed:', e);
+    res.status(400).json({ error:e?.message || 'Impossible de lire le fichier Excel.' });
+  }
+});
+
+app.post('/api/import-excel/confirm', requireOrigin, requireAuth, async (req: Request, res: Response) => {
+  const user=currentUser(req);
+  const groups=req.body?.groups;
+  if (!groups || typeof groups !== 'object') return res.status(400).json({error:'Données d’import Excel invalides.'});
+  const imported:any={projects:0,tasks:0,milestones:0,items:[]};
+  try {
+    for (const type of ['projects','tasks','milestones'] as const) {
+      const items=Array.isArray(groups[type]) ? groups[type] : [];
+      if (!items.length) continue;
+      const check=normalizeJsonImport(type,items,user);
+      if (check.errors.length) return res.status(400).json({error:`Import ${type} refusé : validation échouée.`,errors:check.errors,data:check});
+      for (const item of check.items) {
+        if(type==='projects') imported.items.push(await dbStore.createProject(item as Project,user));
+        else if(type==='tasks') {
+          const task=dbStore.addTask(item.projectId,{...item,id:`tsk-${Date.now()}-${Math.random().toString(36).slice(2,7)}`},user);
+          if(!task) throw new Error(`Projet introuvable pour la tâche ${item.title}.`);
+          imported.items.push(task);
+        } else {
+          const milestone=dbStore.addMilestone(item.projectId,{...item,id:`ms-${Date.now()}-${Math.random().toString(36).slice(2,7)}`},user);
+          if(!milestone) throw new Error(`Projet introuvable pour le jalon ${item.title}.`);
+          imported.items.push(milestone);
+        }
+        imported[type]++;
+      }
+    }
+    res.status(201).json({success:true,data:imported});
+  } catch(e:any) {
+    console.error('Excel confirm failed:',e);
+    res.status(500).json({error:e?.message || 'Import Excel impossible.'});
+  }
+});
+
 app.post('/api/import-json/validate', requireOrigin, requireAuth, (req: Request, res: Response) => {
   const user = currentUser(req);
   const type = req.body?.type as 'projects'|'tasks'|'milestones';
   const items = Array.isArray(req.body?.items) ? req.body.items : [];
   if (!['projects','tasks','milestones'].includes(type)) return res.status(400).json({ error: 'Type JSON invalide.' });
   if (items.length < 1 || items.length > JSON_IMPORT_LIMIT) return res.status(400).json({ error: `Le fichier doit contenir entre 1 et ${JSON_IMPORT_LIMIT} éléments.` });
-  if (type === 'projects' && !RBAC.canCreateOrDeleteProject(user.role)) return res.status(403).json({ error: 'Seul le Directeur de Projets peut importer des projets.' });
+  if (type === 'projects' && user.role !== 'ADMINISTRATEUR' && !RBAC.canCreateOrDeleteProject(user.role)) return res.status(403).json({ error: 'Droits insuffisants pour importer des projets.' });
   if (type === 'tasks' && !RBAC.canManageTasks(user.role)) return res.status(403).json({ error: 'Droits insuffisants pour importer des tâches.' });
-  if (type === 'milestones' && user.role === 'ADMINISTRATEUR') return res.status(403).json({ error: 'Les administrateurs utilisent uniquement la console d’administration.' });
+  if (type === 'milestones' && user.role === 'ADMINISTRATEUR') { /* Admin allowed for controlled import */ }
   res.json({ success: true, data: normalizeJsonImport(type, items, user) });
 });
 
@@ -1872,9 +2059,9 @@ app.post('/api/import-json/confirm', requireOrigin, requireAuth, async (req: Req
   const type = req.body?.type as 'projects'|'tasks'|'milestones';
   const items = Array.isArray(req.body?.items) ? req.body.items : [];
   if (!['projects','tasks','milestones'].includes(type) || !items.length || items.length > JSON_IMPORT_LIMIT) return res.status(400).json({ error: 'Import JSON invalide.' });
-  if (type === 'projects' && !RBAC.canCreateOrDeleteProject(user.role)) return res.status(403).json({ error: 'Seul le Directeur de Projets peut créer des projets.' });
+  if (type === 'projects' && user.role !== 'ADMINISTRATEUR' && !RBAC.canCreateOrDeleteProject(user.role)) return res.status(403).json({ error: 'Droits insuffisants pour créer des projets.' });
   if (type === 'tasks' && !RBAC.canManageTasks(user.role)) return res.status(403).json({ error: 'Droits insuffisants pour créer des tâches.' });
-  if (type === 'milestones' && user.role === 'ADMINISTRATEUR') return res.status(403).json({ error: 'Droits insuffisants pour créer des jalons.' });
+  if (type === 'milestones' && user.role === 'ADMINISTRATEUR') { /* Admin allowed for controlled import */ }
   const check = normalizeJsonImport(type, items, user);
   if (check.errors.length) return res.status(400).json({ error: 'Le contenu a changé ou contient des éléments invalides.', errors: check.errors, data: check });
   const created: any[] = [];

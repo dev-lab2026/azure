@@ -28,7 +28,7 @@ import { PMStudioAnalytics } from './components/PMStudioAnalytics';
 
 // Modals
 import { AIAssistantModal } from './components/AIAssistantModal';
-import { JsonImportModal } from './components/JsonImportModal';
+import { ExcelIntelligentImportModal } from './components/ExcelIntelligentImportModal';
 import { WidgetCustomizerModal } from './components/WidgetCustomizerModal';
 import { AddEditTaskModal } from './components/AddEditTaskModal';
 import { AddEditMilestoneModal } from './components/AddEditMilestoneModal';
@@ -145,7 +145,7 @@ export const App: React.FC = () => {
     isOpen: false,
     project: null,
   });
-  const [isJsonImportOpen, setIsJsonImportOpen] = useState(false);
+  const [isExcelImportOpen, setIsExcelImportOpen] = useState(false);
 
   // Project Handlers
   const handleUpdateProject = async (updated: Project) => {
@@ -413,7 +413,7 @@ export const App: React.FC = () => {
         onSelectProject={(id) => setActiveProjectId(id)}
         onChangeTab={handleTabChange}
         onOpenNewProject={canCreateDeleteProject ? () => setProjectModalState({ isOpen: true, project: null }) : () => {}}
-        onOpenJsonImport={() => setIsJsonImportOpen(true)}
+        onOpenJsonImport={() => setIsExcelImportOpen(true)}
         onOpenAI={() => setIsAIAssistantOpen(true)}
         onOpenCustomizer={() => setIsWidgetCustomizerOpen(true)}
         onOpenSettings={canEditProject ? () => setProjectModalState({ isOpen: true, project: activeProject }) : () => {}}
@@ -606,7 +606,17 @@ export const App: React.FC = () => {
       )}
 
 
-      <JsonImportModal isOpen={isJsonImportOpen} onClose={() => setIsJsonImportOpen(false)} role={currentUser.role} projectId={activeProject?.id} onImported={async () => { const r=await fetch('/api/projects'); const d=await r.json(); if(r.ok&&Array.isArray(d.data)) setProjects(d.data); }} />
+
+      <ExcelIntelligentImportModal
+        isOpen={isExcelImportOpen}
+        onClose={() => setIsExcelImportOpen(false)}
+        role={currentUser.role}
+        onImported={async () => {
+          const r = await fetch('/api/projects');
+          const d = await r.json().catch(() => ({}));
+          if (r.ok && Array.isArray(d.data)) setProjects(d.data);
+        }}
+      />
 
       {/* 7. Microsoft 365 / Entra ID Authentication Modal */}
       <MicrosoftAuthModal
